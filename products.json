@@ -1,0 +1,6 @@
+[
+  { "id": "101", "name": "Teledyne FLIR IIS Blackfly S USB 3.1", "category": "Camera", "stock": "Available" },
+  { "id": "102", "name": "MgF2 Coated Achromatic Lenses", "category": "Lens", "stock": "Available" },
+  { "id": "103", "name": "Hard Coated OD 4.0 10nm Bandpass Filters", "category": "Filter", "stock": "Available" },
+  { "id": "104", "name": "10mm Steel Bolts", "category": "Hardware", "stock": "Out of Stock" }
+]
