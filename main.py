@@ -73,4 +73,5 @@ async def analyze_order(file: UploadFile = File(...)):
     cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
 
 # response.text badhila 'cleaned_text' nu mathidunga
-   return {"status": "success", "ai_result": cleaned_text}
+    return {"status": "success", "ai_result": cleaned_text}
+
