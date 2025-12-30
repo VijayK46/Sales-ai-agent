@@ -69,4 +69,8 @@ async def analyze_order(file: UploadFile = File(...)):
 
     response = model.generate_content(prompt)
 
-    return {"status": "success", "ai_result": response.text}
+# Indha lines-a PUDHUSA add pannunga (Cleaning Step)
+    cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+
+# response.text badhila 'cleaned_text' nu mathidunga
+   return {"status": "success", "ai_result": cleaned_text}
