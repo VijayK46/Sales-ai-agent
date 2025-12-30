@@ -22,7 +22,7 @@ if uploaded_file is not None:
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
                 
                 # NOTE: Unga Server Run aaganum (http://127.0.0.1:8000)
-                response = requests.post("http://127.0.0.1:8000/analyze-order", files=files)
+                response = requests.post("https://sales-ai-agent-he5w.onrender.com/analyze-order", files=files)
                 
                 if response.status_code == 200:
                     data = response.json()
@@ -53,4 +53,5 @@ if uploaded_file is not None:
                     st.error(f"Server Error: {response.text}")
                     
             except Exception as e:
+
                 st.error(f"Connection Failed! Is the Backend Server running? Error: {e}")
