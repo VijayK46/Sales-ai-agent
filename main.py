@@ -7,7 +7,7 @@ import json
 app = FastAPI()
 
 # --- 1. SETUP ---
-genai.configure(api_key="PASTE_YOUR_NEW_API_KEY_HERE")
+genai.configure(api_key="AIzaSyCiDBOl1N9La-a_bqIH1mFAhFm5Y8oWRDo")
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- 2. LOAD DATABASE (Oru vaati load pannna pothum) ---
@@ -68,4 +68,5 @@ async def analyze_order(file: UploadFile = File(...)):
     """
 
     response = model.generate_content(prompt)
+
     return {"status": "success", "ai_result": response.text}
