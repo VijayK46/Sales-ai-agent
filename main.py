@@ -67,11 +67,21 @@ async def analyze_order(file: UploadFile = File(...)):
     Return JSON: {{ "email_draft": "..." }}
     """
 
+    # 1. Get Response
     response = model.generate_content(prompt)
+    raw_text = response.text
 
-# Indha lines-a PUDHUSA add pannunga (Cleaning Step)
-    cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+    # 2. Cleaning (Markdown remove panrom)
+    cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
 
-# response.text badhila 'cleaned_text' nu mathidunga
-    return {"status": "success", "ai_result": cleaned_text}
+    # 3. Convert String to JSON (Idhu dhaan mukkiyam!)
+    try:
+        # String-a Python Dictionary-a mathurom
+        final_data = json.loads(cleaned_text)
+    except json.JSONDecodeError:
+        # Suppose JSON convert aagalana, verum text-a anuppuvom (Safety kaga)
+        final_data = {"email_draft": cleaned_text}
+
+    # 4. Return the Object (Not string)
+    return {"status": "success", "ai_result": final_data}
 
