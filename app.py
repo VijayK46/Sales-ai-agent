@@ -21,7 +21,6 @@ if uploaded_file is not None:
                 # Namma FastAPI Server-ku anupurom
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
                 
-                # NOTE: Unga Server Run aaganum (http://127.0.0.1:8000)
                 response = requests.post("https://sales-ai-agent-he5w.onrender.com/analyze-order", files=files)
                 
                 if response.status_code == 200:
@@ -55,3 +54,4 @@ if uploaded_file is not None:
             except Exception as e:
 
                 st.error(f"Connection Failed! Is the Backend Server running? Error: {e}")
+
