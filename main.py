@@ -18,6 +18,8 @@ api_key = os.getenv("api_key")
 # 3. Configure Gemini
 genai.configure(api_key=api_key)
 
+model = genai.GenerativeModel('gemini-1.5-flash')
+
 # --- 2. LOAD DATABASE (Oru vaati load pannna pothum) ---
 with open("products.json", "r") as f:
     product_db = json.load(f)
@@ -75,22 +77,5 @@ async def analyze_order(file: UploadFile = File(...)):
     Return JSON: {{ "email_draft": "..." }}
     """
 
-    # 1. Get Response
     response = model.generate_content(prompt)
-    raw_text = response.text
-
-    # 2. Cleaning (Markdown remove panrom)
-    cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
-
-    # 3. Convert String to JSON (Idhu dhaan mukkiyam!)
-    try:
-        # String-a Python Dictionary-a mathurom
-        final_data = json.loads(cleaned_text)
-    except json.JSONDecodeError:
-        # Suppose JSON convert aagalana, verum text-a anuppuvom (Safety kaga)
-        final_data = {"email_draft": cleaned_text}
-
-    # 4. Return the Object (Not string)
-    return {"status": "success", "ai_result": final_data}
-
-
+    return {"status": "success", "ai_result": response.text}
