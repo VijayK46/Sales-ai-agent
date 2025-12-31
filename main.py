@@ -9,17 +9,23 @@ import json
 app = FastAPI()
 
 # --- 1. SETUP ---
-# 1. Load the .env file (File-a open panni padikkum)
+# --- 1. SETUP ---
 load_dotenv()
-
-# 2. Get the key safely (File-la irundhu key-a edukkum)
-api_key = os.getenv("api_key")
-
-# 3. Configure Gemini
+api_key = os.getenv("API_KEY")
 genai.configure(api_key=api_key)
 
-model = genai.GenerativeModel('gemini-pro')
+# 👇 Indha 4 lines-a puthusa serkkanum 👇
+print("--- TESTING MODELS ---")
+try:
+    for m in genai.list_models():
+        print(m.name)
+except Exception as e:
+    print(f"Error listing models: {e}")
+print("----------------------")
+# 👆 Ingayae mudiyudhu 👆
 
+model = genai.GenerativeModel('gemini-pro')
+# Irukkura line apdiye irukkattum
 # --- 2. LOAD DATABASE (Oru vaati load pannna pothum) ---
 with open("products.json", "r") as f:
     product_db = json.load(f)
@@ -79,6 +85,7 @@ async def analyze_order(file: UploadFile = File(...)):
 
     response = model.generate_content(prompt)
     return {"status": "success", "ai_result": response.text}
+
 
 
 
