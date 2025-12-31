@@ -18,7 +18,7 @@ api_key = os.getenv("api_key")
 # 3. Configure Gemini
 genai.configure(api_key=api_key)
 
-model = genai.GenerativeModel('gemini-1.5-flash-001')
+model = genai.GenerativeModel('gemini-pro')
 
 # --- 2. LOAD DATABASE (Oru vaati load pannna pothum) ---
 with open("products.json", "r") as f:
@@ -79,4 +79,5 @@ async def analyze_order(file: UploadFile = File(...)):
 
     response = model.generate_content(prompt)
     return {"status": "success", "ai_result": response.text}
+
 
