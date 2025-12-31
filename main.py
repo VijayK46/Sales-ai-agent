@@ -1,4 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
+import os
+from dotenv import load_dotenv
 import google.generativeai as genai
 from pypdf import PdfReader
 import io
@@ -7,8 +9,14 @@ import json
 app = FastAPI()
 
 # --- 1. SETUP ---
-genai.configure(api_key="AIzaSyCiDBOl1N9La-a_bqIH1mFAhFm5Y8oWRDo")
-model = genai.GenerativeModel('gemini-2.5-flash')
+# 1. Load the .env file (File-a open panni padikkum)
+load_dotenv()
+
+# 2. Get the key safely (File-la irundhu key-a edukkum)
+api_key = os.getenv("api_key")
+
+# 3. Configure Gemini
+genai.configure(api_key=api_key)
 
 # --- 2. LOAD DATABASE (Oru vaati load pannna pothum) ---
 with open("products.json", "r") as f:
@@ -84,4 +92,5 @@ async def analyze_order(file: UploadFile = File(...)):
 
     # 4. Return the Object (Not string)
     return {"status": "success", "ai_result": final_data}
+
 
