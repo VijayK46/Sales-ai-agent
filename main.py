@@ -12,7 +12,7 @@ app = FastAPI()
 # --- 1. SETUP ---
 load_dotenv()
 api_key = os.getenv("API_KEY")
-genai.configure(api_key=api_key)
+genai.configure(API_KEY=API_KEY)
 
 # 👇 Indha 4 lines-a puthusa serkkanum 👇
 print("--- TESTING MODELS ---")
@@ -85,6 +85,7 @@ async def analyze_order(file: UploadFile = File(...)):
 
     response = model.generate_content(prompt)
     return {"status": "success", "ai_result": response.text}
+
 
 
 
