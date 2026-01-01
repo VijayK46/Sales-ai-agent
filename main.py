@@ -33,7 +33,7 @@ print("========================================")
 # ---------------------------------------------
 
 # Namakku therinja oru model-a try panrom (List paatha aprom idhai maathalam)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 @app.get("/")
 def home():
@@ -64,3 +64,4 @@ async def analyze_order(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=10000)
+
