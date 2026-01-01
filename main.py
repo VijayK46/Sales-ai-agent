@@ -13,7 +13,7 @@ my_secret_key = os.getenv("API_KEY")
 genai.configure(api_key=my_secret_key)
 
 # 2. MODEL SETUP (Using Standard Free Model)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-flash-latest')
 
 @app.get("/")
 def home():
@@ -73,3 +73,4 @@ async def analyze_order(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=10000)
+
