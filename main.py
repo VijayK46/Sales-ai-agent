@@ -9,61 +9,67 @@ app = FastAPI()
 
 # 1. SETUP
 load_dotenv()
-
-# Render kitta irundhu Key-a edukkurom
 my_secret_key = os.getenv("API_KEY")
-
-# Google kitta Key-a kudukkurom
 genai.configure(api_key=my_secret_key)
 
-# --- 🕵️‍♂️ CHECK MODELS (Idhu dhaan mukkiyam) ---
-print("========================================")
-print("🔍 GOOGLE KITTA IRUKKURA MODELS LIST:")
-try:
-    model_list = []
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            print(f"👉 {m.name}")
-            model_list.append(m.name)
-    if not model_list:
-        print("❌ Model List Empty-a irukku! (API Key-la prachanai)")
-except Exception as e:
-    print(f"❌ Error checking models: {e}")
-print("========================================")
-# ---------------------------------------------
-
-# Namakku therinja oru model-a try panrom (List paatha aprom idhai maathalam)
-model = genai.GenerativeModel('gemini-flash-latest')
+# 2. MODEL SETUP (Using Standard Free Model)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 @app.get("/")
 def home():
-    return {"message": "Sales AI Agent is Live!", "models_found": model_list}
+    return {"message": "Sales AI Agent is Live!", "status": "Running"}
 
 @app.post("/analyze-order")
 async def analyze_order(file: UploadFile = File(...)):
-    content = await file.read()
-    
-    # Prompt Setup
-    prompt = """
-    Extract the following details from this Purchase Order PDF:
-    - PO Number
-    - Vendor Name
-    - Product Names and Quantities
-    - Total Amount
-    Return the output strictly in JSON format.
-    """
-    
-    # Generate Response
-    # PDF content-a Google-ku anuppurom
-    response = model.generate_content([
-        {'mime_type': 'application/pdf', 'data': content},
-        prompt
-    ])
-    
-    return json.loads(response.text)
+    try:
+        content = await file.read()
+        
+        # 3. Stronger Prompt (JSON Mattum Kudu nu miratturom)
+        prompt = """
+        You are an AI Sales Assistant. Extract data from this Purchase Order PDF.
+        
+        Return ONLY a raw JSON object with these keys:
+        {
+            "po_number": "String",
+            "vendor_name": "String",
+            "items": [{"name": "String", "quantity": "Number", "price": "Number"}],
+            "total_amount": "Number"
+        }
+        
+        IMPORTANT: Do not output markdown code blocks (like ```json). Just the raw JSON string.
+        """
+        
+        print("⏳ Sending to AI...")
+        response = model.generate_content([
+            {'mime_type': 'application/pdf', 'data': content},
+            prompt
+        ])
+        
+        # 4. DEBUGGING (Idhu dhaan mukkiyam)
+        print(f"🤖 RAW AI RESPONSE: {response.text}") 
+        
+        # 5. CLEANING (Kuppaiyai neekkurom)
+        clean_text = response.text.strip()
+        # Markdown removal
+        if clean_text.startswith("```"):
+            clean_text = clean_text.replace("```json", "").replace("```", "")
+        
+        clean_text = clean_text.strip()
+        
+        # 6. PARSING
+        if not clean_text:
+            return {"error": "AI returned empty response. Check Logs for Safety Block."}
+            
+        return json.loads(clean_text)
+
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR: {str(e)}")
+        # Error vandhalum JSON format laye badhil tharom, so App crash aagadhu
+        return {
+            "status": "error", 
+            "message": str(e),
+            "hint": "Check Render Logs to see 'RAW AI RESPONSE'"
+        }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=10000)
-
-
-
