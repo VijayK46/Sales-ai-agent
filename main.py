@@ -18,7 +18,7 @@ genai.configure(api_key=my_secret_key)
 
 # 2. SETUP GOOGLE SHEETS
 # Neenga copy panna Sheet ID-a inga podunga 👇
-SHEET_ID = "1geB31JE7RrrEC56s23oD5zyL-PeYRRqnZ1mKEjJMDJA/edit?gid=0#gid=0" 
+SHEET_ID ="1geB31JE7RrrEC56s23oD5zyL-PeYRRqnZ1mKEjJMDJA"
 
 def get_google_sheet():
     # GitHub-la upload panna JSON file peyar
@@ -118,3 +118,4 @@ def download_report():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=10000)
+
