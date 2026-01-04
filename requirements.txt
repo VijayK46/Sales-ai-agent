@@ -1,12 +1,10 @@
-fastapi
-uvicorn
-python-multipart
-pypdf
-google-generativeai>=0.8.3
-streamlit
+flask
+flask-sqlalchemy
+psycopg2-binary
+google-generativeai
 python-dotenv
 pandas
 openpyxl
-gspread
-oauth2client
+gunicorn
+
 
