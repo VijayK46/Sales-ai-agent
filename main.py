@@ -1,121 +1,156 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse
-import uvicorn
 import os
 import google.generativeai as genai
-from dotenv import load_dotenv
-import json
+from flask import Flask, request, jsonify, send_file, render_template_string
+from flask_sqlalchemy import SQLAlchemy
 import pandas as pd
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import io
+import json
 
-app = FastAPI()
+app = Flask(__name__)
 
-# 1. SETUP API KEY
-load_dotenv()
-my_secret_key = os.getenv("API_KEY")
-genai.configure(api_key=my_secret_key)
+# --- 1. CONFIGURATION ---
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
+genai.configure(api_key=GENAI_API_KEY)
 
-# 2. SETUP GOOGLE SHEETS
-# Neenga copy panna Sheet ID-a inga podunga 👇
-SHEET_ID ="1geB31JE7RrrEC56s23oD5zyL-PeYRRqnZ1mKEjJMDJA"
+# SQL Database Setup
+db_url = os.environ.get("DATABASE_URL")
+if db_url and db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1) # Render Fix
 
-def get_google_sheet():
-    # GitHub-la upload panna JSON file peyar
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
-    client = gspread.authorize(creds)
-    # Open the sheet by ID
-    sheet = client.open_by_key(SHEET_ID).sheet1
-    return sheet
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-# 3. MODEL SETUP
-model = genai.GenerativeModel('gemini-flash-latest')
+# Email Setup (Replace with your details if testing locally)
+SENDER_EMAIL = "unga_email@gmail.com"  
+SENDER_PASSWORD = "abcd efgh ijkl mnop"
 
-@app.get("/")
+STRICT_VENDORS = ["Newport", "Thorlabs", "Edmund", "Micro-Controle", "Coherent"]
+
+# --- 2. DATABASE MODEL ---
+class Order(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    po_number = db.Column(db.String(50))
+    date = db.Column(db.String(50))
+    customer_name = db.Column(db.String(200))
+    vendor_name = db.Column(db.String(200))
+    item_name = db.Column(db.Text)
+    amount = db.Column(db.Float)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+with app.app_context():
+    db.create_all()
+
+# --- 3. AI & EMAIL FUNCTIONS ---
+def extract_po_data(file_content):
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    prompt = """Extract: PO Number, Date, Customer Name, Vendor Name, Highest Value Item, Total Amount.
+    Output JSON: {"po_number": "", "po_date": "", "customer_name": "", "vendor_name": "", "highest_value_product": "", "total_amount": 0.0}"""
+    try:
+        response = model.generate_content([{"mime_type": "application/pdf", "data": file_content}, prompt])
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
+    except:
+        return None
+
+def send_smart_email(customer_email, po_data):
+    msg = MIMEMultipart()
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = customer_email
+    
+    vendor = po_data.get('vendor_name', '')
+    is_strict = any(v.lower() in vendor.lower() for v in STRICT_VENDORS) if vendor else False
+    
+    if is_strict:
+        msg['Subject'] = f"ACTION REQUIRED: PO {po_data['po_number']}"
+        body = f"Dear Customer,\n\nOrder for {vendor} requires End User Form.\n\nRegards,\nSales Team"
+    else:
+        msg['Subject'] = f"Order Received: PO {po_data['po_number']}"
+        body = f"Dear Customer,\n\nThank you for order PO {po_data['po_number']}.\n\nRegards,\nSales Team"
+        
+    msg.attach(MIMEText(body, 'plain'))
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.sendmail(SENDER_EMAIL, customer_email, msg.as_string())
+        server.quit()
+    except Exception as e:
+        print(f"Email Error: {e}")
+
+# --- 4. WEBSITE UI (HTML) ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sales Agent AI 🤖</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; background-color: #f4f4f9; }
+        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 500px; margin: auto; }
+        h1 { color: #2c3e50; }
+        input[type=file] { margin: 20px 0; }
+        button { background: #27ae60; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #219150; }
+        .link { display: block; margin-top: 20px; color: #3498db; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Sales Agent AI</h1>
+        <p>Upload a Purchase Order PDF to process.</p>
+        <form action="/analyze-order" method="post" enctype="multipart/form-data">
+            <input type="file" name="file" accept=".pdf" required>
+            <br>
+            <button type="submit">Analyze & Process</button>
+        </form>
+        <a href="/download-report" class="link">📥 Download Excel Report</a>
+    </div>
+</body>
+</html>
+"""
+
+# --- 5. ROUTES ---
+@app.route("/")
 def home():
-    return {"message": "Hybrid Sales Agent (Google Sheets DB + Excel Output) is Live!"}
+    return render_template_string(HTML_TEMPLATE)
 
-# --- SAVE TO GOOGLE SHEET ---
-def save_to_sheet(data):
-    try:
-        sheet = get_google_sheet()
+@app.route("/analyze-order", methods=["POST"])
+def analyze_order():
+    if 'file' not in request.files: return "No file", 400
+    file = request.files['file']
+    data = extract_po_data(file.read())
+    
+    if data:
+        # Save to SQL
+        new_order = Order(
+            po_number=data.get("po_number"), date=data.get("po_date"),
+            customer_name=data.get("customer_name"), vendor_name=data.get("vendor_name"),
+            item_name=data.get("highest_value_product"), amount=data.get("total_amount")
+        )
+        db.session.add(new_order)
+        db.session.commit()
         
-        # Prepare the Row
-        row = [
-            data.get("po_number", "N/A"),
-            data.get("po_date", "N/A"),
-            data.get("customer_name", "N/A"),
-            data.get("vendor_name", "N/A"),
-            data.get("highest_value_product", "N/A"),
-            data.get("total_amount", "N/A")
-        ]
+        # Send Email
+        send_smart_email(SENDER_EMAIL, data) # Testing with your email
         
-        # Headers illana, First time podu
-        if len(sheet.get_all_values()) == 0:
-            headers = ["PO Number", "PO Date", "Customer Company", "Vendor Name", "High Value Product", "Total Amount"]
-            sheet.append_row(headers)
-            
-        # Add Data
-        sheet.append_row(row)
-        print("✅ Data saved to Google Sheets!")
-        
-    except Exception as e:
-        print(f"❌ Google Sheet Error: {e}")
+        return f"<h1>✅ Success!</h1><p>PO {data['po_number']} saved to SQL Database.</p><p>Email Sent.</p><a href='/'>Go Back</a>"
+    return "Failed to extract", 500
 
-# --- ANALYZE API ---
-@app.post("/analyze-order")
-async def analyze_order(file: UploadFile = File(...)):
-    try:
-        content = await file.read()
-        
-        prompt = """
-        Analyze this Purchase Order PDF and extract:
-        1. "po_number"
-        2. "po_date" (Format: DD-MM-YYYY)
-        3. "customer_name" (Buyer Company)
-        4. "vendor_name" (Seller)
-        5. "total_amount"
-        6. "highest_value_product" (Name of the most expensive item)
-        
-        Return ONLY valid JSON.
-        """
-        
-        response = model.generate_content([{'mime_type': 'application/pdf', 'data': content}, prompt])
-        
-        # Clean JSON
-        clean_text = response.text.strip().replace("```json", "").replace("```", "")
-        extracted_data = json.loads(clean_text)
-        
-        # Save to Google Sheet (Permanent Storage)
-        save_to_sheet(extracted_data)
-        
-        return {"status": "success", "message": "Data saved to Database securely!", "data": extracted_data}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# --- DOWNLOAD EXCEL API ---
-@app.get("/download-report")
+@app.route("/download-report")
 def download_report():
-    try:
-        # 1. Google Sheet-la irundhu data edu
-        sheet = get_google_sheet()
-        all_data = sheet.get_all_records()
-        
-        # 2. DataFrame ah maathu
-        df = pd.DataFrame(all_data)
-        
-        # 3. Excel ah convert pannu
-        excel_filename = "Full_Sales_Report.xlsx"
-        df.to_excel(excel_filename, index=False)
-        
-        # 4. Download kudu
-        return FileResponse(excel_filename, filename=excel_filename, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        
-    except Exception as e:
-        return {"error": f"Failed to download: {str(e)}"}
+    orders = Order.query.all()
+    data = [{"PO": o.po_number, "Vendor": o.vendor_name, "Amount": o.amount} for o in orders]
+    df = pd.DataFrame(data)
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+    out.seek(0)
+    return send_file(out, download_name="report.xlsx", as_attachment=True, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=10000)
-
+    app.run(host="0.0.0.0", port=5000)
