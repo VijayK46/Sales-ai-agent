@@ -85,7 +85,7 @@ def analyze_order():
             return "❌ Error: No selected file", 400
 
         # Step 1: Read PDF using Gemini
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
         file_data = file.read()
         
         prompt = """
@@ -144,3 +144,4 @@ def analyze_order():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
