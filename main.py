@@ -1,156 +1,151 @@
 import os
-import google.generativeai as genai
-from flask import Flask, request, jsonify, send_file, render_template_string
-from flask_sqlalchemy import SQLAlchemy
-import pandas as pd
-from datetime import datetime
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-import io
 import json
+import pandas as pd
+import google.generativeai as genai
+from flask import Flask, request, render_template, send_file
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import DeclarativeBase
+import traceback  # Idhu dhaan Error-a kandupudikkum spy!
 
+# 1. App Setup
 app = Flask(__name__)
 
-# --- 1. CONFIGURATION ---
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
-genai.configure(api_key=GENAI_API_KEY)
-
-# SQL Database Setup
+# 2. Database Configuration (Auto-fix for Render)
 db_url = os.environ.get("DATABASE_URL")
 if db_url and db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1) # Render Fix
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = db_url
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# Email Setup (Replace with your details if testing locally)
-SENDER_EMAIL = "unga_email@gmail.com"  
-SENDER_PASSWORD = "abcd efgh ijkl mnop"
+# 3. Initialize Database
+class Base(DeclarativeBase):
+    pass
 
-STRICT_VENDORS = ["Newport", "Thorlabs", "Edmund", "Micro-Controle", "Coherent"]
+db = SQLAlchemy(model_class=Base)
+db.init_app(app)
 
-# --- 2. DATABASE MODEL ---
+# 4. Define Table (Model)
 class Order(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    po_number = db.Column(db.String(50))
-    date = db.Column(db.String(50))
-    customer_name = db.Column(db.String(200))
-    vendor_name = db.Column(db.String(200))
-    item_name = db.Column(db.Text)
-    amount = db.Column(db.Float)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    po_number = db.Column(db.String(50), nullable=False)
+    vendor_name = db.Column(db.String(100), nullable=False)
+    total_amount = db.Column(db.Float, nullable=False)
+    items = db.Column(db.Text, nullable=True)  # JSON string
 
+# 5. Create Tables
 with app.app_context():
     db.create_all()
 
-# --- 3. AI & EMAIL FUNCTIONS ---
-def extract_po_data(file_content):
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    prompt = """Extract: PO Number, Date, Customer Name, Vendor Name, Highest Value Item, Total Amount.
-    Output JSON: {"po_number": "", "po_date": "", "customer_name": "", "vendor_name": "", "highest_value_product": "", "total_amount": 0.0}"""
-    try:
-        response = model.generate_content([{"mime_type": "application/pdf", "data": file_content}, prompt])
-        clean_text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_text)
-    except:
-        return None
+# 6. Configure Gemini AI
+api_key = os.environ.get("GENAI_API_KEY")
+if api_key:
+    genai.configure(api_key=api_key)
 
-def send_smart_email(customer_email, po_data):
-    msg = MIMEMultipart()
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = customer_email
-    
-    vendor = po_data.get('vendor_name', '')
-    is_strict = any(v.lower() in vendor.lower() for v in STRICT_VENDORS) if vendor else False
-    
-    if is_strict:
-        msg['Subject'] = f"ACTION REQUIRED: PO {po_data['po_number']}"
-        body = f"Dear Customer,\n\nOrder for {vendor} requires End User Form.\n\nRegards,\nSales Team"
-    else:
-        msg['Subject'] = f"Order Received: PO {po_data['po_number']}"
-        body = f"Dear Customer,\n\nThank you for order PO {po_data['po_number']}.\n\nRegards,\nSales Team"
-        
-    msg.attach(MIMEText(body, 'plain'))
-    try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        server.sendmail(SENDER_EMAIL, customer_email, msg.as_string())
-        server.quit()
-    except Exception as e:
-        print(f"Email Error: {e}")
+# --- ROUTES ---
 
-# --- 4. WEBSITE UI (HTML) ---
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Sales Agent AI 🤖</title>
-    <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; background-color: #f4f4f9; }
-        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 500px; margin: auto; }
-        h1 { color: #2c3e50; }
-        input[type=file] { margin: 20px 0; }
-        button { background: #27ae60; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 16px; }
-        button:hover { background: #219150; }
-        .link { display: block; margin-top: 20px; color: #3498db; text-decoration: none; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🚀 Sales Agent AI</h1>
-        <p>Upload a Purchase Order PDF to process.</p>
-        <form action="/analyze-order" method="post" enctype="multipart/form-data">
-            <input type="file" name="file" accept=".pdf" required>
-            <br>
-            <button type="submit">Analyze & Process</button>
-        </form>
-        <a href="/download-report" class="link">📥 Download Excel Report</a>
-    </div>
-</body>
-</html>
-"""
-
-# --- 5. ROUTES ---
 @app.route("/")
 def home():
-    return render_template_string(HTML_TEMPLATE)
+    # Simple Upload Page
+    return """
+    <html>
+        <head><title>Sales AI Agent</title></head>
+        <body style="font-family: Arial; text-align: center; padding: 50px;">
+            <h1>🚀 Sales AI Agent (Level 3)</h1>
+            <p>Upload your Purchase Order (PDF) below:</p>
+            <form action="/analyze-order" method="post" enctype="multipart/form-data">
+                <input type="file" name="file" accept=".pdf" required>
+                <br><br>
+                <button type="submit" style="padding: 10px 20px; font-size: 16px; cursor: pointer;">Analyze & Save PO</button>
+            </form>
+        </body>
+    </html>
+    """
 
 @app.route("/analyze-order", methods=["POST"])
 def analyze_order():
-    if 'file' not in request.files: return "No file", 400
-    file = request.files['file']
-    data = extract_po_data(file.read())
-    
-    if data:
-        # Save to SQL
+    try:
+        # Check if file exists
+        if "file" not in request.files:
+            return "No file part", 400
+        
+        file = request.files["file"]
+        if file.filename == "":
+            return "No selected file", 400
+
+        print("✅ 1. File Received: ", file.filename)
+
+        # Step 1: Read PDF using Gemini
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        # Read file bytes
+        file_data = file.read()
+        
+        prompt = """
+        Extract the following details from the attached Purchase Order PDF:
+        1. PO Number
+        2. Vendor Name
+        3. Total Amount
+        4. List of items (name, quantity, price)
+        
+        Return the output purely as a valid JSON object. No markdown, no ```json.
+        Format:
+        {
+            "po_number": "PO-123",
+            "vendor_name": "ABC Corp",
+            "total_amount": 1000.50,
+            "items": [{"name": "Widget", "qty": 10, "price": 100}]
+        }
+        """
+
+        print("✅ 2. Sending to Gemini AI...")
+        response = model.generate_content([
+            {"mime_type": "application/pdf", "data": file_data},
+            prompt
+        ])
+        
+        print("✅ 3. Gemini Responded!")
+        
+        # Step 2: Clean JSON
+        raw_text = response.text.strip()
+        # Remove markdown if Gemini adds it
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:]
+        if raw_text.endswith("```"):
+            raw_text = raw_text[:-3]
+            
+        data = json.loads(raw_text)
+        print(f"✅ 4. Data Extracted: {data}")
+
+        # Step 3: Save to Database
         new_order = Order(
-            po_number=data.get("po_number"), date=data.get("po_date"),
-            customer_name=data.get("customer_name"), vendor_name=data.get("vendor_name"),
-            item_name=data.get("highest_value_product"), amount=data.get("total_amount")
+            po_number=data.get("po_number", "UNKNOWN"),
+            vendor_name=data.get("vendor_name", "UNKNOWN"),
+            total_amount=float(data.get("total_amount", 0.0)),
+            items=json.dumps(data.get("items", []))
         )
+        
         db.session.add(new_order)
         db.session.commit()
-        
-        # Send Email
-        send_smart_email(SENDER_EMAIL, data) # Testing with your email
-        
-        return f"<h1>✅ Success!</h1><p>PO {data['po_number']} saved to SQL Database.</p><p>Email Sent.</p><a href='/'>Go Back</a>"
-    return "Failed to extract", 500
+        print("✅ 5. Saved to PostgreSQL Database!")
 
-@app.route("/download-report")
-def download_report():
-    orders = Order.query.all()
-    data = [{"PO": o.po_number, "Vendor": o.vendor_name, "Amount": o.amount} for o in orders]
-    df = pd.DataFrame(data)
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
-    out.seek(0)
-    return send_file(out, download_name="report.xlsx", as_attachment=True, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # Step 4: Create Excel for Download
+        df = pd.DataFrame([data])
+        excel_filename = "po_data.xlsx"
+        df.to_excel(excel_filename, index=False)
+
+        return send_file(excel_filename, as_attachment=True)
+
+    except Exception as e:
+        # --- THE SPY CAMERA 🕵️‍♂️ ---
+        print("\n\n❌ ❌ ERROR KANDUPUDICHUTEN (CHECK BELOW) ❌ ❌")
+        print(f"ERROR TYPE: {type(e).__name__}")
+        print(f"ERROR MESSAGE: {str(e)}")
+        print("⬇️ FULL TRACEBACK ⬇️")
+        print(traceback.format_exc()) # Idhu unmai error-a sollidum
+        print("❌ ❌ ERROR END ❌ ❌\n\n")
+        
+        return f"Failed to extract data. Check Render Logs for details. Error: {str(e)}", 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)
