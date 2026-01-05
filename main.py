@@ -2,10 +2,10 @@ import os
 import json
 import pandas as pd
 import google.generativeai as genai
-from flask import Flask, request, render_template, send_file
+from flask import Flask, request, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase
-import traceback  # Idhu dhaan Error-a kandupudikkum spy!
+import traceback
 
 # 1. App Setup
 app = Flask(__name__)
@@ -31,7 +31,7 @@ class Order(db.Model):
     po_number = db.Column(db.String(50), nullable=False)
     vendor_name = db.Column(db.String(100), nullable=False)
     total_amount = db.Column(db.Float, nullable=False)
-    items = db.Column(db.Text, nullable=True)  # JSON string
+    items = db.Column(db.Text, nullable=True)
 
 # 5. Create Tables
 with app.app_context():
@@ -46,17 +46,24 @@ if api_key:
 
 @app.route("/")
 def home():
-    # Simple Upload Page
     return """
     <html>
-        <head><title>Sales AI Agent</title></head>
-        <body style="font-family: Arial; text-align: center; padding: 50px;">
-            <h1>🚀 Sales AI Agent (Level 3)</h1>
-            <p>Upload your Purchase Order (PDF) below:</p>
+        <head>
+            <title>Sales AI Agent</title>
+            <style>
+                body { font-family: sans-serif; text-align: center; padding: 50px; }
+                form { background: #f4f4f4; padding: 20px; display: inline-block; border-radius: 10px; }
+                button { background: #28a745; color: white; padding: 10px 20px; border: none; cursor: pointer; font-size: 16px; }
+                button:hover { background: #218838; }
+            </style>
+        </head>
+        <body>
+            <h1>🚀 Sales AI Agent (Final Version)</h1>
+            <p>Upload Purchase Order (PDF) to Extract Data & Save to SQL</p>
             <form action="/analyze-order" method="post" enctype="multipart/form-data">
                 <input type="file" name="file" accept=".pdf" required>
                 <br><br>
-                <button type="submit" style="padding: 10px 20px; font-size: 16px; cursor: pointer;">Analyze & Save PO</button>
+                <button type="submit">Analyze & Download Excel</button>
             </form>
         </body>
     </html>
@@ -65,31 +72,30 @@ def home():
 @app.route("/analyze-order", methods=["POST"])
 def analyze_order():
     try:
-        # Check if file exists
+        # Check API Key
+        if not api_key:
+            return "❌ Error: GENAI_API_KEY is missing in Render Environment!", 500
+
+        # Check File
         if "file" not in request.files:
-            return "No file part", 400
+            return "❌ Error: No file part", 400
         
         file = request.files["file"]
         if file.filename == "":
-            return "No selected file", 400
-
-        print("✅ 1. File Received: ", file.filename)
+            return "❌ Error: No selected file", 400
 
         # Step 1: Read PDF using Gemini
         model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        # Read file bytes
         file_data = file.read()
         
         prompt = """
-        Extract the following details from the attached Purchase Order PDF:
+        Extract the following details from the PDF:
         1. PO Number
         2. Vendor Name
         3. Total Amount
         4. List of items (name, quantity, price)
         
-        Return the output purely as a valid JSON object. No markdown, no ```json.
-        Format:
+        Return ONLY valid JSON. Format:
         {
             "po_number": "PO-123",
             "vendor_name": "ABC Corp",
@@ -98,24 +104,19 @@ def analyze_order():
         }
         """
 
-        print("✅ 2. Sending to Gemini AI...")
         response = model.generate_content([
             {"mime_type": "application/pdf", "data": file_data},
             prompt
         ])
         
-        print("✅ 3. Gemini Responded!")
-        
         # Step 2: Clean JSON
         raw_text = response.text.strip()
-        # Remove markdown if Gemini adds it
         if raw_text.startswith("```json"):
             raw_text = raw_text[7:]
         if raw_text.endswith("```"):
             raw_text = raw_text[:-3]
             
         data = json.loads(raw_text)
-        print(f"✅ 4. Data Extracted: {data}")
 
         # Step 3: Save to Database
         new_order = Order(
@@ -127,23 +128,19 @@ def analyze_order():
         
         db.session.add(new_order)
         db.session.commit()
-        print("✅ 5. Saved to PostgreSQL Database!")
 
-        # Step 4: Create Excel for Download
+        # Step 4: Create Excel (Uses openpyxl)
         df = pd.DataFrame([data])
         excel_filename = "po_data.xlsx"
         df.to_excel(excel_filename, index=False)
 
         return send_file(excel_filename, as_attachment=True)
 
-   except Exception as e:
-        # Error-a logs-la podu
-        import traceback
-        traceback.print_exc()
-        
-        # MUKKIYAM: Error-a Screen-laye kaattu!
-        return f"❌ SERVER ERROR: {str(e)}", 500
+    except Exception as e:
+        # 🚨 IDHU DHAAN UNGALUKKU SCREEN LA ERROR KAATTUM 🚨
+        error_message = f"❌ BIG ERROR: {str(e)}"
+        print(traceback.format_exc())
+        return error_message, 500
 
 if __name__ == "__main__":
     app.run(debug=True)
-
