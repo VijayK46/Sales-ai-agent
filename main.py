@@ -136,16 +136,14 @@ def analyze_order():
 
         return send_file(excel_filename, as_attachment=True)
 
-    except Exception as e:
-        # --- THE SPY CAMERA 🕵️‍♂️ ---
-        print("\n\n❌ ❌ ERROR KANDUPUDICHUTEN (CHECK BELOW) ❌ ❌")
-        print(f"ERROR TYPE: {type(e).__name__}")
-        print(f"ERROR MESSAGE: {str(e)}")
-        print("⬇️ FULL TRACEBACK ⬇️")
-        print(traceback.format_exc()) # Idhu unmai error-a sollidum
-        print("❌ ❌ ERROR END ❌ ❌\n\n")
+   except Exception as e:
+        # Error-a logs-la podu
+        import traceback
+        traceback.print_exc()
         
-        return f"Failed to extract data. Check Render Logs for details. Error: {str(e)}", 500
+        # MUKKIYAM: Error-a Screen-laye kaattu!
+        return f"❌ SERVER ERROR: {str(e)}", 500
 
 if __name__ == "__main__":
     app.run(debug=True)
+
