@@ -1,103 +1,38 @@
 import os
-import json
-import pandas as pd
 import google.generativeai as genai
-from flask import Flask, request, send_file
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.orm import DeclarativeBase
-import traceback
+from flask import Flask
 
 app = Flask(__name__)
 
-# --- CONFIG ---
+# API Key Setup
 api_key = os.environ.get("GENAI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-db_url = os.environ.get("DATABASE_URL")
-if db_url and db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-
-app.config["SQLALCHEMY_DATABASE_URI"] = db_url
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
-class Base(DeclarativeBase):
-    pass
-db = SQLAlchemy(model_class=Base)
-db.init_app(app)
-
-class Order(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    po_number = db.Column(db.String(50))
-    vendor_name = db.Column(db.String(100))
-    total_amount = db.Column(db.Float)
-    items = db.Column(db.Text)
-
-with app.app_context():
-    db.create_all()
-
-# --- 🔍 SPECIAL DIAGNOSTIC ROUTE (CHECK MODELS) ---
-@app.route("/check-models")
-def check_models():
+@app.route("/")
+def scan_models():
     try:
         if not api_key:
-            return "❌ API KEY MISSING"
+            return "<h1>❌ Error: API Key Kaanom! (Check Render Env Vars)</h1>"
+
+        # List all available models
+        output = "<h1>🤖 Unga Account-ku Available-a irukkura Models:</h1><ul>"
         
-        # Google kitta 'List' kelunga
-        model_list = []
+        found_any = False
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                model_list.append(m.name)
+                output += f"<li>✅ <b>{m.name}</b></li>"
+                found_any = True
         
-        return f"""
-        <h1>🔍 Available Models</h1>
-        <ul>
-            {''.join([f'<li>{m}</li>' for m in model_list])}
-        </ul>
-        """
-    except Exception as e:
-        return f"❌ ERROR LISTING MODELS: {str(e)}"
-
-# --- NORMAL ROUTES ---
-@app.route("/")
-def home():
-    return """
-    <html>
-        <body>
-            <h1>🚀 Sales AI Agent</h1>
-            <p><a href="/check-models">👉 Click Here to Check Available Models</a></p>
-            <form action="/analyze-order" method="post" enctype="multipart/form-data">
-                <input type="file" name="file" accept=".pdf" required> <br><br>
-                <button type="submit">Analyze</button>
-            </form>
-        </body>
-    </html>
-    """
-
-@app.route("/analyze-order", methods=["POST"])
-def analyze_order():
-    try:
-        if "file" not in request.files: return "No file", 400
-        file = request.files["file"]
-        if file.filename == "": return "No file", 400
-
-        # --- USE THE MODEL NAME YOU FIND IN /check-models ---
-        # Ippo thaikku 'gemini-pro' veppom. List pathu mathalam.
-        model = genai.GenerativeModel("gemini-pro") 
+        output += "</ul>"
         
-        file_data = file.read()
-        prompt = "Extract PO Number, Vendor, Amount, Items as JSON."
-
-        response = model.generate_content([
-            {"mime_type": "application/pdf", "data": file_data},
-            prompt
-        ])
-        
-        # Simple extraction for testing
-        return f"SUCCESS! Output: {response.text}"
+        if not found_any:
+            output += "<p>⚠️ Models list aagudhu, aana 'generateContent' support panra models edhuvum illa.</p>"
+            
+        return output
 
     except Exception as e:
-        return f"❌ ERROR: {str(e)}", 500
+        return f"<h1>❌ Big Error:</h1><p>{str(e)}</p>"
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=10000)
