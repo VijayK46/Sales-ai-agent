@@ -4,4 +4,5 @@ pandas
 openpyxl
 requests
 google-generativeai>=0.7.2
-
+gunicorn
+psycopg2-binary
