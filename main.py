@@ -26,6 +26,7 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
+    __tablename__ = 'orders_v2'  # <--- INDHA VARIYAI SERKKAVUM (New Table Name)
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
     vendor_name = db.Column(db.String(100), nullable=False)
@@ -135,4 +136,5 @@ def analyze_order():
 if __name__ == "__main__":
     # Render Port (Important!)
     app.run(host='0.0.0.0', port=10000)
+
 
