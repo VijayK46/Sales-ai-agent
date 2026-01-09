@@ -27,13 +27,11 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
-    # NEW TABLE v4 (Added Currency Column)
     __tablename__ = 'orders_v4' 
-    
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
     vendor_name = db.Column(db.String(100), nullable=False)
-    currency = db.Column(db.String(10), nullable=True) # New: USD, INR, EUR
+    currency = db.Column(db.String(10), nullable=True)
     total_amount = db.Column(db.Float, nullable=False)
     payment_terms = db.Column(db.String(200), nullable=True)
     items = db.Column(db.Text, nullable=True) 
@@ -46,42 +44,64 @@ api_key = os.environ.get("GENAI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# --- 4. EXCEL GENERATOR (With Currency) ---
+# --- 4. LOGIC: FIND HIGH VALUE ITEM ---
+def get_high_value_item_name(items_json):
+    """
+    Parses JSON items and finds the one with highest Total Value (Price * Qty).
+    """
+    try:
+        if not items_json: return "No Items"
+        
+        items = json.loads(items_json)
+        if not isinstance(items, list) or len(items) == 0:
+            return "No Items"
+
+        # Logic: Calculate (Price * Qty) for each item
+        best_item = None
+        max_val = -1
+
+        for item in items:
+            try:
+                # Handle strings like "$100" or "100.00"
+                price = float(str(item.get('price', 0)).replace(',', '').replace('$', ''))
+                qty = float(str(item.get('qty', 1)).replace(',', ''))
+                total_val = price * qty
+                
+                if total_val > max_val:
+                    max_val = total_val
+                    best_item = item.get('name', 'Unknown Item')
+            except:
+                continue
+        
+        return best_item if best_item else "Unknown Item"
+
+    except Exception as e:
+        return "Error Parsing"
+
+# --- 5. EXCEL GENERATOR ---
 def generate_master_excel():
     all_orders = Order.query.all()
     excel_data = []
     sl_no = 1
     
     for order in all_orders:
-        # 1. Clean Item Names
-        try:
-            items_list = json.loads(order.items) if order.items else []
-        except:
-            items_list = []
-        
-        # Join items with comma (Ex: "Item A, Item B")
-        if isinstance(items_list, list):
-            item_names_str = ", ".join([str(i.get('name', '')).strip() for i in items_list])
-        else:
-            item_names_str = ""
-
-        # 2. Format Amount with Currency (Ex: "USD 5000")
+        item_name = get_high_value_item_name(order.items)
         currency_symbol = order.currency if order.currency else ""
         formatted_value = f"{currency_symbol} {order.total_amount}"
 
         excel_data.append({
             "Sl. No": sl_no,
             "Institute Name": order.vendor_name,
-            "Item Name": item_names_str,
+            "Main Item (High Value)": item_name,
             "PO Number": order.po_number,
             "Payment Term": order.payment_terms if order.payment_terms else "N/A",
-            "Total Value": formatted_value, # Now includes Currency
+            "Total Value": formatted_value,
             "Remarks": ""
         })
         sl_no += 1
 
     df = pd.DataFrame(excel_data)
-    columns_order = ["Sl. No", "Institute Name", "Item Name", "PO Number", "Payment Term", "Total Value", "Remarks"]
+    columns_order = ["Sl. No", "Institute Name", "Main Item (High Value)", "PO Number", "Payment Term", "Total Value", "Remarks"]
     
     if not df.empty:
         df = df[columns_order]
@@ -91,7 +111,6 @@ def generate_master_excel():
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Tracker')
-        # Auto-adjust width
         worksheet = writer.sheets['Tracker']
         for column_cells in worksheet.columns:
             length = max(len(str(cell.value)) for cell in column_cells)
@@ -100,7 +119,7 @@ def generate_master_excel():
     output.seek(0)
     return output
 
-# --- 5. ROUTES ---
+# --- 6. ROUTES ---
 
 @app.route("/")
 def home():
@@ -108,20 +127,15 @@ def home():
     
     display_data = []
     for order in orders:
-        try:
-            items = json.loads(order.items)
-            # Take only first 2 items for display summary
-            item_names = [i['name'] for i in items]
-            item_str = ", ".join(item_names[:2]) + ("..." if len(item_names) > 2 else "")
-        except:
-            item_str = ""
+        # HERE IS THE FIX: Using the same function as Excel
+        main_item_name = get_high_value_item_name(order.items)
         
         curr = order.currency if order.currency else ""
-            
+        
         display_data.append({
             "id": order.id,
             "vendor": order.vendor_name,
-            "items": item_str,
+            "items": main_item_name,  # Updated to show High Value Item
             "po": order.po_number,
             "payment": order.payment_terms,
             "amount": f"{curr} {order.total_amount}"
@@ -135,41 +149,39 @@ def home():
                 body { font-family: 'Segoe UI', sans-serif; background-color: #f8f9fa; padding: 20px; }
                 .container { max-width: 1200px; margin: auto; }
                 .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
-                h1 { color: #2c3e50; text-align: center; }
-                
                 table { width: 100%; border-collapse: collapse; margin-top: 10px; }
                 th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #e9ecef; }
-                th { background-color: #343a40; color: white; border-radius: 5px 5px 0 0; }
-                tr:hover { background-color: #f1f1f1; }
-                
-                .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; color: white; text-decoration: none; font-weight: bold; display: inline-block; }
+                th { background-color: #343a40; color: white; }
+                .high-value { color: #d63384; font-weight: bold; }
+                .amount { color: green; font-weight: bold; }
+                .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; color: white; text-decoration: none; display: inline-block; }
                 .btn-green { background: #28a745; }
                 .btn-blue { background: #007bff; }
-                input[type=file] { border: 1px solid #ced4da; padding: 8px; border-radius: 5px; }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>🚀 Sales AI Manager (Currency Support)</h1>
+                <h1 style="text-align:center;">🚀 Sales AI Manager</h1>
                 
-                <div class="card" style="text-align: center;">
+                <div class="card" style="text-align:center;">
                     <h3>➕ Upload New PO</h3>
                     <form action="/analyze-order" method="post" enctype="multipart/form-data">
                         <input type="file" name="file" accept=".pdf" required>
+                        <br><br>
                         <button type="submit" class="btn btn-green">Analyze & Add</button>
                     </form>
                     <br>
-                    <a href="/download-master" class="btn btn-blue">📥 Download Full Excel Report</a>
+                    <a href="/download-master" class="btn btn-blue">📥 Download Excel Report</a>
                 </div>
 
                 <div class="card">
-                    <h3>📊 Live Database View</h3>
+                    <h3>📊 Live Database (High Value Items)</h3>
                     <table>
                         <thead>
                             <tr>
                                 <th>Sl. No</th>
                                 <th>Institute Name</th>
-                                <th>Item Summary</th>
+                                <th>High Value Item</th>
                                 <th>PO Number</th>
                                 <th>Payment Term</th>
                                 <th>Total Value</th>
@@ -180,13 +192,13 @@ def home():
                             <tr>
                                 <td>{{ row.id }}</td>
                                 <td>{{ row.vendor }}</td>
-                                <td>{{ row.items }}</td>
+                                <td class="high-value">{{ row.items }}</td>
                                 <td>{{ row.po }}</td>
                                 <td>{{ row.payment }}</td>
-                                <td style="color: green; font-weight: bold;">{{ row.amount }}</td>
+                                <td class="amount">{{ row.amount }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="6" style="text-align:center;">No Data Found. Upload a PDF!</td></tr>
+                            <tr><td colspan="6" style="text-align:center;">No Data Found.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -207,24 +219,20 @@ def analyze_order():
         model = genai.GenerativeModel("gemini-flash-latest")
         file_data = file.read()
         
-        # UPDATED PROMPT: Asks for Currency explicitly
         prompt = """
-        Extract the following details from the PDF:
+        Extract details from PDF:
         1. PO Number
-        2. Vendor Name (Institute Name)
-        3. Currency (e.g., USD, EUR, INR, GBP). If symbol is used ($), convert to code (USD).
-        4. Total Amount (Just the number)
-        5. Payment Terms (e.g., "Net 30", "100% Advance"). If not found, "N/A".
-        6. Items (List of item names only)
+        2. Vendor Name
+        3. Currency (Symbol to Code: $->USD, ₹->INR, €->EUR)
+        4. Total Amount (Number)
+        5. Payment Terms (or "N/A")
+        6. Items (Extract Name, Qty, Price for ALL items)
         
-        Return JSON format:
+        Return JSON:
         {
-            "po_number": "PO-123",
-            "vendor_name": "ABC Corp",
-            "currency": "USD",
-            "total_amount": 5000.00,
-            "payment_terms": "Net 30",
-            "items": [{"name": "Item A"}, {"name": "Item B"}]
+            "po_number": "...", "vendor_name": "...", "currency": "...",
+            "total_amount": 0.0, "payment_terms": "...",
+            "items": [{"name": "...", "qty": 1, "price": 100}]
         }
         """
         
@@ -235,7 +243,7 @@ def analyze_order():
         new_order = Order(
             po_number=data.get("po_number", "UNKNOWN"),
             vendor_name=data.get("vendor_name", "UNKNOWN"),
-            currency=data.get("currency", ""),  # Saves Currency
+            currency=data.get("currency", ""),
             total_amount=float(data.get("total_amount", 0.0) if data.get("total_amount") else 0.0),
             payment_terms=data.get("payment_terms", "N/A"),
             items=json.dumps(data.get("items", []))
