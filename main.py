@@ -75,7 +75,7 @@ def analyze_order():
 
         # --- MODEL: GEMINI 2.0 FLASH LITE ---
         # Neenga ketta adhe model!
-        model = genai.GenerativeModel("gemini-2.0-flash-lite")
+        model = genai.GenerativeModel("gemini-flash-latest")
         
         file_data = file.read()
 
@@ -135,3 +135,4 @@ def analyze_order():
 if __name__ == "__main__":
     # Render Port (Important!)
     app.run(host='0.0.0.0', port=10000)
+
