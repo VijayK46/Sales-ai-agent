@@ -140,6 +140,7 @@ def home():
     """
 
 @app.route("/analyze-order", methods=["POST"])
+@app.route("/analyze-order", methods=["POST"])
 def analyze_order():
     try:
         if not api_key: return "❌ Error: API Key Missing", 500
@@ -150,14 +151,14 @@ def analyze_order():
         model = genai.GenerativeModel("gemini-flash-latest")
         file_data = file.read()
         
-        # Updated Prompt to get Payment Terms
+        # Payment Term Extraction Prompt
         prompt = """
-        Extract the following from PDF:
+        Extract from PDF:
         1. PO Number
-        2. Vendor Name (Institute Name)
+        2. Vendor Name
         3. Total Amount
-        4. Payment Terms (e.g., "30 days net", "100% Advance", "Net 45"). If not found, return "N/A".
-        5. Items (just name, qty, price)
+        4. Payment Terms (if not found return "N/A")
+        5. Items (name, qty, price)
         
         Return JSON:
         {
@@ -173,7 +174,7 @@ def analyze_order():
         text = response.text.replace("```json", "").replace("```", "").strip()
         data = json.loads(text)
 
-        # 2. Save NEW data to Database (v3)
+        # 2. Save to Database (No Excel Creation here)
         new_order = Order(
             po_number=data.get("po_number", "UNKNOWN"),
             vendor_name=data.get("vendor_name", "UNKNOWN"),
@@ -184,32 +185,30 @@ def analyze_order():
         db.session.add(new_order)
         db.session.commit()
 
-        # 3. Return Master Excel
-        master_excel = generate_master_excel()
-        
-        return send_file(
-            master_excel,
-            as_attachment=True,
-            download_name="Sales_Tracker.xlsx",
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        # 3. SUCCESS MESSAGE (Don't Download Excel)
+        return """
+        <html>
+            <body style="font-family: 'Segoe UI', sans-serif; text-align: center; padding: 50px; background-color: #f4f4f9;">
+                <div style="background: white; padding: 40px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
+                    <h1 style="color: #28a745; font-size: 50px; margin: 0;">✅</h1>
+                    <h2 style="color: #333;">Saved Successfully!</h2>
+                    <p style="color: #666;">PO Data has been added to the Master List.</p>
+                    
+                    <div style="margin-top: 30px;">
+                        <a href="/" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                            ⬅️ Upload Another PO
+                        </a>
+                    </div>
+                    
+                    <br><br>
+                    <a href="/download-master" style="color: #666; text-decoration: underline;">
+                        📥 Download Updated Master Excel
+                    </a>
+                </div>
+            </body>
+        </html>
+        """
 
     except Exception as e:
         print(traceback.format_exc())
         return f"❌ Error: {str(e)}", 500
-
-@app.route("/download-master")
-def download_master():
-    try:
-        master_excel = generate_master_excel()
-        return send_file(
-            master_excel,
-            as_attachment=True,
-            download_name="Sales_Tracker.xlsx",
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    except Exception as e:
-        return f"❌ Error: {str(e)}", 500
-
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=10000)
