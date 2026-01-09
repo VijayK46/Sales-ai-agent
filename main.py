@@ -44,28 +44,43 @@ api_key = os.environ.get("GENAI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 
-# --- 4. LOGIC: HIGH VALUE ITEM ---
+# --- 4. LOGIC: HIGH VALUE ITEM (Common for Excel & Dashboard) ---
 def get_high_value_item_name(items_json):
+    """
+    Returns ONLY the name of the item with the highest (Qty * Price).
+    """
     try:
-        if not items_json: return "No Items"
+        if not items_json: return "-"
+        
         items = json.loads(items_json)
-        if not isinstance(items, list) or len(items) == 0: return "No Items"
+        if not isinstance(items, list) or len(items) == 0:
+            return "-"
 
-        best_item = None
+        best_item_name = "-"
         max_val = -1
 
         for item in items:
             try:
-                price = float(str(item.get('price', 0)).replace(',', '').replace('$', ''))
-                qty = float(str(item.get('qty', 1)).replace(',', ''))
+                # Clean Price and Qty (Remove $, comma)
+                price_str = str(item.get('price', 0)).replace(',', '').replace('$', '').replace('€', '').replace('₹', '')
+                qty_str = str(item.get('qty', 1)).replace(',', '')
+                
+                price = float(price_str) if price_str else 0
+                qty = float(qty_str) if qty_str else 1
+                
                 total_val = price * qty
+                
+                # Check if this is the highest value item
                 if total_val > max_val:
                     max_val = total_val
-                    best_item = item.get('name', 'Unknown')
-            except: continue
+                    best_item_name = item.get('name', 'Item')
+            except:
+                continue
         
-        return best_item if best_item else "Unknown Item"
-    except: return "Error Parsing"
+        return best_item_name
+
+    except Exception as e:
+        return "Error"
 
 # --- 5. EXCEL GENERATOR ---
 def generate_master_excel():
@@ -74,14 +89,16 @@ def generate_master_excel():
     sl_no = 1
     
     for order in all_orders:
+        # USE SAME LOGIC AS DASHBOARD
         item_name = get_high_value_item_name(order.items)
+        
         currency_symbol = order.currency if order.currency else ""
         formatted_value = f"{currency_symbol} {order.total_amount}"
 
         excel_data.append({
             "Sl. No": sl_no,
             "Institute Name": order.vendor_name,
-            "Main Item (High Value)": item_name,
+            "Item Name": item_name,  # Only High Value Item
             "PO Number": order.po_number,
             "Payment Term": order.payment_terms if order.payment_terms else "N/A",
             "Total Value": formatted_value,
@@ -90,7 +107,7 @@ def generate_master_excel():
         sl_no += 1
 
     df = pd.DataFrame(excel_data)
-    columns_order = ["Sl. No", "Institute Name", "Main Item (High Value)", "PO Number", "Payment Term", "Total Value", "Remarks"]
+    columns_order = ["Sl. No", "Institute Name", "Item Name", "PO Number", "Payment Term", "Total Value", "Remarks"]
     
     if not df.empty: df = df[columns_order]
     else: df = pd.DataFrame(columns=columns_order)
@@ -113,13 +130,15 @@ def home():
     
     display_data = []
     for order in orders:
-        main_item_name = get_high_value_item_name(order.items)
+        # USE SAME LOGIC AS EXCEL
+        main_item = get_high_value_item_name(order.items)
+        
         curr = order.currency if order.currency else ""
         
         display_data.append({
             "id": order.id,
             "vendor": order.vendor_name,
-            "items": main_item_name,
+            "items": main_item, # Shows High Value Item
             "po": order.po_number,
             "payment": order.payment_terms,
             "amount": f"{curr} {order.total_amount}"
@@ -159,7 +178,7 @@ def home():
                 </div>
 
                 <div class="card">
-                    <h3>📊 Live Database (Only Valid POs)</h3>
+                    <h3>📊 Live Database (High Value Item Only)</h3>
                     <table>
                         <thead>
                             <tr>
@@ -203,15 +222,14 @@ def analyze_order():
         model = genai.GenerativeModel("gemini-flash-latest")
         file_data = file.read()
         
-        # --- THE WATCHMAN PROMPT 👮 ---
         prompt = """
-        Analyze this document. 
-        Step 1: Is this a Purchase Order (PO) or an Order Confirmation? Answer TRUE or FALSE.
+        Analyze document.
+        Step 1: Is this a Purchase Order? (TRUE/FALSE)
         Step 2: If TRUE, extract details.
         
         Return STRICT JSON:
         {
-            "is_purchase_order": true,  <-- THIS IS KEY
+            "is_purchase_order": true,
             "po_number": "...", 
             "vendor_name": "...", 
             "currency": "...",
@@ -220,25 +238,16 @@ def analyze_order():
             "items": [{"name": "...", "qty": 1, "price": 100}]
         }
         
-        If it is NOT a PO (e.g., Invoice, Quote, Email text), return:
-        {"is_purchase_order": false}
+        If NOT PO, return: {"is_purchase_order": false}
         """
         
         response = model.generate_content([{"mime_type": "application/pdf", "data": file_data}, prompt])
         text = response.text.replace("```json", "").replace("```", "").strip()
         data = json.loads(text)
 
-        # --- THE GATEKEEPER CHECK 🛑 ---
         if data.get("is_purchase_order") != True:
-            # Reject the file!
-            return """
-            <script>
-                alert('⚠️ Valid PO Illa! (Skipped)\\nAI says this document is NOT a Purchase Order.'); 
-                window.location.href='/';
-            </script>
-            """
+            return """<script>alert('⚠️ Valid PO Illa! (Skipped)'); window.location.href='/';</script>"""
 
-        # Only Save if "is_purchase_order" is TRUE
         new_order = Order(
             po_number=data.get("po_number", "UNKNOWN"),
             vendor_name=data.get("vendor_name", "UNKNOWN"),
@@ -250,7 +259,7 @@ def analyze_order():
         db.session.add(new_order)
         db.session.commit()
 
-        return """<script>alert('✅ Valid PO Added Successfully!'); window.location.href='/';</script>"""
+        return """<script>alert('✅ Valid PO Added!'); window.location.href='/';</script>"""
 
     except Exception as e:
         print(traceback.format_exc())
@@ -263,7 +272,7 @@ def download_master():
         return send_file(
             master_excel,
             as_attachment=True,
-            download_name="Sales_Tracker_Master.xlsx",
+            download_name="Sales_Tracker.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     except Exception as e:
