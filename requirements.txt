@@ -1,7 +1,6 @@
 flask
-flask-sqlalchemy
-psycopg2-binary
-google-generativeai
+flask_sqlalchemy
 pandas
 openpyxl
-gunicorn
+requests
+google-generativeai>=0.7.2  <-- Indha version romba mukkiyam!
