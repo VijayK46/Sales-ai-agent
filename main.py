@@ -36,11 +36,11 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
-    __tablename__ = 'orders_v9_final' # Version 9 (Customer & Symbol Update)
+    __tablename__ = 'orders_v10_shortname' # New Version for Short Name
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
-    customer_name = db.Column(db.String(100), nullable=False) # Changed Vendor -> Customer
-    currency_symbol = db.Column(db.String(10), nullable=True) # Stores €, $, ₹
+    customer_name = db.Column(db.String(100), nullable=False)
+    currency_symbol = db.Column(db.String(10), nullable=True)
     total_amount = db.Column(db.Float, nullable=False)
     items = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(50), default="PO Received")
@@ -56,7 +56,7 @@ def clean_float(value):
         return float(clean_str) if clean_str else 0.0
     except: return 0.0
 
-# --- HELPER: HIGH VALUE ITEM (Strict Logic) ---
+# --- HELPER: HIGH VALUE ITEM (With Cleanup) ---
 def get_high_value_item_name(items_json):
     try:
         if not items_json: return "-"
@@ -67,34 +67,46 @@ def get_high_value_item_name(items_json):
         max_val = -1.0
         
         for item in items:
-            name = item.get('name', 'Unknown')
-            # Clean Price & Qty for Calculation
+            # Step 1: Get the Name
+            raw_name = item.get('name', 'Unknown')
+            
+            # Step 2: Remove Model Numbers / Part Numbers (Optional Cleanup)
+            # Logic: If name is very long, take first 3-4 words.
+            short_name = " ".join(raw_name.split()[:4]) if len(raw_name.split()) > 4 else raw_name
+            
+            # Calculate Value
             price = clean_float(item.get('price', 0))
             qty = clean_float(item.get('qty', 1))
             total = price * qty
             
             if total > max_val:
                 max_val = total
-                best_item = name # Only the Name
+                best_item = short_name # Store the Short Name
                 
         return best_item
     except: return "-"
 
-# --- AI LOGIC (GEMINI FLASH LATEST) ---
+# --- AI LOGIC (GEMINI FLASH) ---
 def process_document(file_data):
     try:
         model = genai.GenerativeModel("gemini-flash-latest")
         
+        # 🔥 MODIFIED PROMPT FOR SHORT NAMES 🔥
         prompt = """
         Analyze PDF. Determine Type: "CUSTOMER_PO", "OA", "SHIPPING".
         
         1. CUSTOMER_PO: 
-           - Extract 'customer_name' (Company who sent the PO).
+           - Extract 'customer_name'.
            - Extract 'po_number'.
            - Extract 'total_amount'.
-           - Extract 'currency_symbol' EXACTLY as shown in document (e.g. €, $, ₹, £, USD, INR). 
-             If symbol is present ($), return "$". If only text (USD), return "USD".
-           - Extract items (name, qty, price).
+           - Extract 'currency_symbol'.
+           - Extract items:
+             * 'name': EXTRACT ONLY THE PRODUCT CATEGORY NAME. 
+               DO NOT include Part Numbers, Model Numbers, Descriptions, or Colors.
+               Example: Instead of "RS-2000 Optical Table 4x8 ft", just return "Optical Table".
+               Example: Instead of "Laser Diode 5mW 650nm Red", just return "Laser Diode".
+             * 'qty': Quantity number only.
+             * 'price': Unit price.
         
         2. OA: Extract 'Reference PO Number'.
         3. SHIPPING: Extract 'Reference PO Number'.
@@ -102,10 +114,10 @@ def process_document(file_data):
         Return JSON:
         {
             "type": "CUSTOMER_PO",
-            "po_number": "PO-123",
-            "customer_name": "Newport Corp",
-            "currency_symbol": "$", 
-            "total_amount": "5000.00",
+            "po_number": "...",
+            "customer_name": "...",
+            "currency_symbol": "...",
+            "total_amount": "...",
             "items": [{"name": "Optical Table", "qty": 1, "price": "5000"}]
         }
         """
@@ -120,18 +132,15 @@ def process_document(file_data):
         if not po_num: return "Skipped: No PO Number"
 
         with app.app_context():
-            # 1. New PO
             if doc_type == "CUSTOMER_PO":
                 existing = Order.query.filter_by(po_number=po_num).first()
                 if existing: return f"Duplicate: PO {po_num} Exists"
                 
-                amount = clean_float(data.get("total_amount"))
-                
                 new_order = Order(
                     po_number=po_num,
-                    customer_name=data.get("customer_name", "Unknown"), # Customer Name
-                    currency_symbol=data.get("currency_symbol", ""),    # Symbol (€, $, ₹)
-                    total_amount=amount,
+                    customer_name=data.get("customer_name", "Unknown"),
+                    currency_symbol=data.get("currency_symbol", ""),
+                    total_amount=clean_float(data.get("total_amount")),
                     items=json.dumps(data.get("items", [])),
                     status="PO Received"
                 )
@@ -139,7 +148,6 @@ def process_document(file_data):
                 db.session.commit()
                 return "✅ Success: PO Created"
 
-            # 2. Update Status
             elif doc_type in ["OA", "SHIPPING"]:
                 order = Order.query.filter(Order.po_number.ilike(f"%{po_num}%")).first()
                 if order:
@@ -148,7 +156,7 @@ def process_document(file_data):
                     db.session.commit()
                     return f"✅ Status Updated: {order.status}"
                 else:
-                    return f"❌ Error: PO {po_num} Not Found"
+                    return f"❌ PO {po_num} Not Found"
                     
         return "Processed"
 
@@ -163,16 +171,12 @@ def home_view():
     orders = Order.query.order_by(Order.id.desc()).all()
     display_data = []
     for o in orders:
-        # Combine Symbol + Amount (e.g., € 5000.0)
         sym = o.currency_symbol if o.currency_symbol else ""
         formatted_total = f"{sym} {o.total_amount}"
-        
         display_data.append({
-            "po": o.po_number, 
-            "customer": o.customer_name, # Customer Name
+            "po": o.po_number, "customer": o.customer_name, 
             "item": get_high_value_item_name(o.items), 
-            "total": formatted_total, 
-            "status": o.status
+            "total": formatted_total, "status": o.status
         })
     return render_template_string("""
     <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} th{background:#eee}</style>
@@ -185,11 +189,9 @@ def home_view():
         <tr><th>PO #</th><th>Customer Name</th><th>Main Item</th><th>Total Value</th><th>Status</th></tr>
         {% for row in data %}
         <tr>
-            <td>{{row.po}}</td>
-            <td>{{row.customer}}</td>
+            <td>{{row.po}}</td><td>{{row.customer}}</td>
             <td style="color:blue;font-weight:bold">{{row.item}}</td>
-            <td>{{row.total}}</td>
-            <td>{{row.status}}</td>
+            <td>{{row.total}}</td><td>{{row.status}}</td>
         </tr>
         {% endfor %}
     </table>
@@ -210,14 +212,7 @@ def download():
     for o in orders:
         sym = o.currency_symbol if o.currency_symbol else ""
         formatted_total = f"{sym} {o.total_amount}"
-        
-        data.append({
-            "PO Number": o.po_number, 
-            "Customer Name": o.customer_name, # Changed Label
-            "Main Item": get_high_value_item_name(o.items), 
-            "Total Value": formatted_total, 
-            "Status": o.status
-        })
+        data.append({"PO Number": o.po_number, "Customer Name": o.customer_name, "Main Item": get_high_value_item_name(o.items), "Total Value": formatted_total, "Status": o.status})
     df = pd.DataFrame(data)
     out = BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
