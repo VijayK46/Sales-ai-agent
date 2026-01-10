@@ -36,7 +36,7 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
-    __tablename__ = 'orders_v11_fixed'
+    __tablename__ = 'orders_v12_smart' # Version 12
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
     customer_name = db.Column(db.String(100), nullable=False)
@@ -144,7 +144,6 @@ def upload():
     if f: return f"<script>alert('{process_document(f.read())}');window.location.href='/'</script>"
     return "<script>window.location.href='/'</script>"
 
-# --- 🛠️ TEST EMAIL ROUTE (FIXED UNSEEN) ---
 @app.route("/test-email")
 def test_email():
     try:
@@ -152,17 +151,15 @@ def test_email():
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(EMAIL_USER, EMAIL_PASS)
         mail.select("inbox")
-        
-        # 🔥 FIX: Changed '(UNREAD)' to "UNSEEN" (Standard for Gmail)
-        status, messages = mail.search(None, "UNSEEN")
-        
+        # 🔥 Filter: Search only UNSEEN mails with "PO" in Subject
+        status, messages = mail.search(None, '(UNSEEN SUBJECT "PO")')
         count = len(messages[0].split()) if messages[0] else 0
         mail.logout()
-        return f"✅ <b>SUCCESS!</b><br>Connected as: {EMAIL_USER}<br>Unread Emails: {count}<br><br>If count > 0, check Home Page!"
+        return f"✅ <b>SUCCESS!</b><br>Filtered Search Active (Looking for Subject: 'PO')<br>Relevant Unread Emails: {count}"
     except Exception as e:
         return f"❌ <b>FAILED!</b><br>Error: {str(e)}"
 
-# --- EMAIL WATCHER (FIXED UNSEEN) ---
+# --- EMAIL WATCHER (SMART FILTER) ---
 def email_bot():
     while True:
         try:
@@ -171,22 +168,23 @@ def email_bot():
             mail.login(EMAIL_USER, EMAIL_PASS)
             mail.select("inbox")
             
-            # 🔥 FIX: Changed here too
-            status, messages = mail.search(None, "UNSEEN")
+            # 🔥 IMPORTANT: Now fetching ONLY emails with "PO" in Subject
+            # This skips your 5000 junk emails!
+            status, messages = mail.search(None, '(UNSEEN SUBJECT "PO")')
             
-            for e_id in messages[0].split():
-                res, msg = mail.fetch(e_id, "(RFC822)")
-                for response in msg:
-                    if isinstance(response, tuple):
-                        msg_body = email.message_from_bytes(response[1])
-                        for part in msg_body.walk():
-                            if part.get_filename() and part.get_filename().endswith(".pdf"):
-                                process_document(part.get_payload(decode=True))
-                        # IMPORTANT: Marking as Seen happens automatically by fetching, but good to be safe
-                        mail.store(e_id, '+FLAGS', '\\Seen')
+            if messages[0]:
+                for e_id in messages[0].split():
+                    res, msg = mail.fetch(e_id, "(RFC822)")
+                    for response in msg:
+                        if isinstance(response, tuple):
+                            msg_body = email.message_from_bytes(response[1])
+                            for part in msg_body.walk():
+                                if part.get_filename() and part.get_filename().endswith(".pdf"):
+                                    process_document(part.get_payload(decode=True))
+                            mail.store(e_id, '+FLAGS', '\\Seen')
             mail.logout()
         except: pass
-        time.sleep(30)
+        time.sleep(30) # Check every 30 seconds
 
 if os.environ.get("EMAIL_USER"):
     t = threading.Thread(target=email_bot)
