@@ -15,13 +15,19 @@ import time
 
 app = Flask(__name__)
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (UPDATED FOR DB STABILITY) ---
 db_url = os.environ.get("DATABASE_URL")
 if db_url and db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# 🔥 CRITICAL FIX: Auto-Reconnect if DB connection drops
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,  # Checks connection before using
+    "pool_recycle": 300,    # Refreshes connection every 5 mins
+}
 
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
@@ -36,7 +42,7 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
-    __tablename__ = 'orders_v12_smart' # Version 12
+    __tablename__ = 'orders_v13_stable' # Version 13
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
     customer_name = db.Column(db.String(100), nullable=False)
@@ -120,23 +126,26 @@ def process_document(file_data):
 # --- ROUTES ---
 @app.route("/")
 def home_view():
-    orders = Order.query.order_by(Order.id.desc()).all()
-    data = [{"po": o.po_number, "customer": o.customer_name, "item": get_high_value_item_name(o.items), "total": f"{o.currency_symbol or ''} {o.total_amount}", "status": o.status} for o in orders]
-    return render_template_string("""
-    <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} .btn{padding:10px;background:blue;color:white;text-decoration:none}</style>
-    <h1>🚀 Sales AI Manager</h1>
-    <a href="/test-email" class="btn" style="background:orange">🛠️ Test Email Connection</a>
-    <br><br>
-    <form action="/upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".pdf" required> <button>Analyze</button>
-    </form>
-    <table>
-        <tr><th>PO #</th><th>Customer</th><th>Main Item</th><th>Total</th><th>Status</th></tr>
-        {% for row in data %}
-        <tr><td>{{row.po}}</td><td>{{row.customer}}</td><td>{{row.item}}</td><td>{{row.total}}</td><td>{{row.status}}</td></tr>
-        {% endfor %}
-    </table>
-    """, data=data)
+    try:
+        orders = Order.query.order_by(Order.id.desc()).all()
+        data = [{"po": o.po_number, "customer": o.customer_name, "item": get_high_value_item_name(o.items), "total": f"{o.currency_symbol or ''} {o.total_amount}", "status": o.status} for o in orders]
+        return render_template_string("""
+        <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} .btn{padding:10px;background:blue;color:white;text-decoration:none}</style>
+        <h1>🚀 Sales AI Manager</h1>
+        <a href="/test-email" class="btn" style="background:orange">🛠️ Test Email Connection</a>
+        <br><br>
+        <form action="/upload" method="post" enctype="multipart/form-data">
+            <input type="file" name="file" accept=".pdf" required> <button>Analyze</button>
+        </form>
+        <table>
+            <tr><th>PO #</th><th>Customer</th><th>Main Item</th><th>Total</th><th>Status</th></tr>
+            {% for row in data %}
+            <tr><td>{{row.po}}</td><td>{{row.customer}}</td><td>{{row.item}}</td><td>{{row.total}}</td><td>{{row.status}}</td></tr>
+            {% endfor %}
+        </table>
+        """, data=data)
+    except Exception as e:
+        return f"<h2>Database Error: {e}</h2><p>Please refresh the page.</p>"
 
 @app.route("/upload", methods=["POST"])
 def upload():
@@ -151,7 +160,6 @@ def test_email():
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(EMAIL_USER, EMAIL_PASS)
         mail.select("inbox")
-        # 🔥 Filter: Search only UNSEEN mails with "PO" in Subject
         status, messages = mail.search(None, '(UNSEEN SUBJECT "PO")')
         count = len(messages[0].split()) if messages[0] else 0
         mail.logout()
@@ -159,7 +167,7 @@ def test_email():
     except Exception as e:
         return f"❌ <b>FAILED!</b><br>Error: {str(e)}"
 
-# --- EMAIL WATCHER (SMART FILTER) ---
+# --- EMAIL WATCHER ---
 def email_bot():
     while True:
         try:
@@ -167,9 +175,6 @@ def email_bot():
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(EMAIL_USER, EMAIL_PASS)
             mail.select("inbox")
-            
-            # 🔥 IMPORTANT: Now fetching ONLY emails with "PO" in Subject
-            # This skips your 5000 junk emails!
             status, messages = mail.search(None, '(UNSEEN SUBJECT "PO")')
             
             if messages[0]:
@@ -184,7 +189,7 @@ def email_bot():
                             mail.store(e_id, '+FLAGS', '\\Seen')
             mail.logout()
         except: pass
-        time.sleep(30) # Check every 30 seconds
+        time.sleep(30)
 
 if os.environ.get("EMAIL_USER"):
     t = threading.Thread(target=email_bot)
