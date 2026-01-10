@@ -36,7 +36,7 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
-    __tablename__ = 'orders_v11_fixed' # New Version
+    __tablename__ = 'orders_v11_fixed'
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
     customer_name = db.Column(db.String(100), nullable=False)
@@ -144,26 +144,25 @@ def upload():
     if f: return f"<script>alert('{process_document(f.read())}');window.location.href='/'</script>"
     return "<script>window.location.href='/'</script>"
 
-# --- 🛠️ TEST EMAIL ROUTE (FIXED) ---
+# --- 🛠️ TEST EMAIL ROUTE (FIXED UNSEEN) ---
 @app.route("/test-email")
 def test_email():
     try:
-        if not EMAIL_USER or not EMAIL_PASS: return "❌ Error: Email/Pass Missing in Environment."
-        
+        if not EMAIL_USER or not EMAIL_PASS: return "❌ Error: Email/Pass Missing."
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(EMAIL_USER, EMAIL_PASS)
         mail.select("inbox")
         
-        # 🔥 FIX: Added Parentheses around (UNREAD) for Gmail compatibility
-        status, messages = mail.search(None, '(UNREAD)')
+        # 🔥 FIX: Changed '(UNREAD)' to "UNSEEN" (Standard for Gmail)
+        status, messages = mail.search(None, "UNSEEN")
         
         count = len(messages[0].split()) if messages[0] else 0
         mail.logout()
-        return f"✅ <b>SUCCESS!</b><br>Connected as: {EMAIL_USER}<br>Unread Emails: {count}<br><br>If count is > 0, check Home Page for new orders!"
+        return f"✅ <b>SUCCESS!</b><br>Connected as: {EMAIL_USER}<br>Unread Emails: {count}<br><br>If count > 0, check Home Page!"
     except Exception as e:
         return f"❌ <b>FAILED!</b><br>Error: {str(e)}"
 
-# --- EMAIL WATCHER (FIXED) ---
+# --- EMAIL WATCHER (FIXED UNSEEN) ---
 def email_bot():
     while True:
         try:
@@ -172,8 +171,8 @@ def email_bot():
             mail.login(EMAIL_USER, EMAIL_PASS)
             mail.select("inbox")
             
-            # 🔥 FIX: Added Parentheses here too
-            status, messages = mail.search(None, '(UNREAD)')
+            # 🔥 FIX: Changed here too
+            status, messages = mail.search(None, "UNSEEN")
             
             for e_id in messages[0].split():
                 res, msg = mail.fetch(e_id, "(RFC822)")
@@ -183,6 +182,7 @@ def email_bot():
                         for part in msg_body.walk():
                             if part.get_filename() and part.get_filename().endswith(".pdf"):
                                 process_document(part.get_payload(decode=True))
+                        # IMPORTANT: Marking as Seen happens automatically by fetching, but good to be safe
                         mail.store(e_id, '+FLAGS', '\\Seen')
             mail.logout()
         except: pass
