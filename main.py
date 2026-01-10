@@ -245,6 +245,31 @@ if os.environ.get("EMAIL_USER"):
     t = threading.Thread(target=email_bot)
     t.daemon = True
     t.start()
+# --- INDHA CODE-A COPY PANNI MAIN.PY KIEZHA PODUNGA ---
+
+@app.route("/test-email")
+def test_email():
+    try:
+        if not EMAIL_USER or not EMAIL_PASS:
+            return "❌ Error: Email or Password not set in Environment Variables."
+        
+        # Try Connecting
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(EMAIL_USER, EMAIL_PASS)
+        mail.select("inbox")
+        
+        # Check Unread Count
+        status, messages = mail.search(None, 'UNREAD')
+        count = len(messages[0].split()) if messages[0] else 0
+        
+        mail.logout()
+        return f"✅ <b>SUCCESS!</b><br>Email Connected Successfully!<br>Connected as: {EMAIL_USER}<br>Unread Emails Found: {count}"
+        
+    except Exception as e:
+        return f"❌ <b>FAILED!</b><br>Error Message: {str(e)}"
+
+# -----------------------------------------------------
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
+
