@@ -36,7 +36,7 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
-    __tablename__ = 'orders_v11_test'
+    __tablename__ = 'orders_v11_fixed' # New Version
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
     customer_name = db.Column(db.String(100), nullable=False)
@@ -48,11 +48,10 @@ class Order(db.Model):
 with app.app_context():
     db.create_all()
 
-# --- HELPER FUNCTIONS ---
+# --- HELPERS ---
 def clean_float(value):
     try:
-        if not value: return 0.0
-        clean_str = re.sub(r'[^\d.]', '', str(value))
+        clean_str = re.sub(r'[^\d.]', '', str(value)) if value else "0"
         return float(clean_str) if clean_str else 0.0
     except: return 0.0
 
@@ -61,18 +60,16 @@ def get_high_value_item_name(items_json):
         if not items_json: return "-"
         items = json.loads(items_json)
         if not items: return "-"
-        best_item = "-"
-        max_val = -1.0
+        best, max_val = "-", -1.0
         for item in items:
             raw_name = item.get('name', 'Unknown')
             short_name = " ".join(raw_name.split()[:4]) if len(raw_name.split()) > 4 else raw_name
             price = clean_float(item.get('price', 0))
             qty = clean_float(item.get('qty', 1))
-            total = price * qty
-            if total > max_val:
-                max_val = total
-                best_item = short_name
-        return best_item
+            if (price * qty) > max_val:
+                max_val = (price * qty)
+                best = short_name
+        return best
     except: return "-"
 
 # --- AI LOGIC ---
@@ -80,14 +77,11 @@ def process_document(file_data):
     try:
         model = genai.GenerativeModel("gemini-flash-latest")
         prompt = """
-        Analyze PDF. Determine Type: "CUSTOMER_PO", "OA", "SHIPPING".
-        1. CUSTOMER_PO: Extract 'customer_name', 'po_number', 'total_amount', 'currency_symbol', items(name, qty, price).
-           - 'name': PRODUCT CATEGORY ONLY. No Part No/Desc.
-        2. OA: Extract 'Reference PO Number'.
-        3. SHIPPING: Extract 'Reference PO Number'.
-        
-        Return JSON:
-        {"type": "CUSTOMER_PO", "po_number": "...", "customer_name": "...", "currency_symbol": "...", "total_amount": "...", "items": [{"name": "...", "qty": 1, "price": "..."}]}
+        Analyze PDF. Types: "CUSTOMER_PO", "OA", "SHIPPING".
+        1. CUSTOMER_PO: Extract customer_name, po_number, total_amount, currency_symbol, items(name,qty,price).
+           * Item Name: PRODUCT CATEGORY ONLY. No Part No.
+        2. OA/SHIPPING: Extract Reference PO Number.
+        Return JSON.
         """
         response = model.generate_content([{"mime_type": "application/pdf", "data": file_data}, prompt])
         text = response.text.replace("```json", "").replace("```", "").strip()
@@ -100,8 +94,7 @@ def process_document(file_data):
 
         with app.app_context():
             if doc_type == "CUSTOMER_PO":
-                existing = Order.query.filter_by(po_number=po_num).first()
-                if existing: return f"Duplicate: PO {po_num} Exists"
+                if Order.query.filter_by(po_number=po_num).first(): return "Duplicate PO"
                 new_order = Order(
                     po_number=po_num,
                     customer_name=data.get("customer_name", "Unknown"),
@@ -112,99 +105,65 @@ def process_document(file_data):
                 )
                 db.session.add(new_order)
                 db.session.commit()
-                return "✅ Success: PO Created"
+                return "✅ PO Created"
             elif doc_type in ["OA", "SHIPPING"]:
                 order = Order.query.filter(Order.po_number.ilike(f"%{po_num}%")).first()
                 if order:
-                    if doc_type == "OA": order.status = "OA Received"
-                    if doc_type == "SHIPPING": order.status = "Shipped"
+                    order.status = "OA Received" if doc_type == "OA" else "Shipped"
                     db.session.commit()
-                    return f"✅ Status Updated: {order.status}"
-                else: return f"❌ PO {po_num} Not Found"
-        return "Processed"
+                    return f"✅ Updated: {order.status}"
+                return "❌ PO Not Found"
     except Exception as e:
         with app.app_context(): db.session.rollback()
         return f"Error: {str(e)}"
 
-# --- EMAIL TESTER (NEW FEATURE) ---
-def check_email_connection():
-    try:
-        if not EMAIL_USER or not EMAIL_PASS:
-            return "❌ ENV VARIABLES MISSING"
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(EMAIL_USER, EMAIL_PASS)
-        mail.select("inbox")
-        status, messages = mail.search(None, 'UNREAD')
-        count = len(messages[0].split()) if messages[0] else 0
-        mail.logout()
-        return f"✅ Connected! (Unread Emails: {count})"
-    except Exception as e:
-        return f"❌ FAILED: {str(e)}"
-
 # --- ROUTES ---
 @app.route("/")
 def home_view():
-    # TEST EMAIL CONNECTION ON LOAD
-    email_status = check_email_connection()
-    
     orders = Order.query.order_by(Order.id.desc()).all()
-    display_data = []
-    for o in orders:
-        sym = o.currency_symbol if o.currency_symbol else ""
-        formatted_total = f"{sym} {o.total_amount}"
-        display_data.append({
-            "po": o.po_number, "customer": o.customer_name, 
-            "item": get_high_value_item_name(o.items), 
-            "total": formatted_total, "status": o.status
-        })
+    data = [{"po": o.po_number, "customer": o.customer_name, "item": get_high_value_item_name(o.items), "total": f"{o.currency_symbol or ''} {o.total_amount}", "status": o.status} for o in orders]
     return render_template_string("""
-    <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} th{background:#eee} .status-box{padding:10px; border-radius:5px; margin-bottom:20px; font-weight:bold; color:white; background: #333;} </style>
-    
+    <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} .btn{padding:10px;background:blue;color:white;text-decoration:none}</style>
     <h1>🚀 Sales AI Manager</h1>
-    
-    <div class="status-box" style="background: {% if '✅' in email_status %}green{% else %}red{% endif %};">
-        📧 Email Status: {{ email_status }}
-    </div>
-
+    <a href="/test-email" class="btn" style="background:orange">🛠️ Test Email Connection</a>
+    <br><br>
     <form action="/upload" method="post" enctype="multipart/form-data">
         <input type="file" name="file" accept=".pdf" required> <button>Analyze</button>
     </form>
-    <a href="/download">Download Excel</a>
     <table>
-        <tr><th>PO #</th><th>Customer Name</th><th>Main Item</th><th>Total Value</th><th>Status</th></tr>
+        <tr><th>PO #</th><th>Customer</th><th>Main Item</th><th>Total</th><th>Status</th></tr>
         {% for row in data %}
-        <tr>
-            <td>{{row.po}}</td><td>{{row.customer}}</td>
-            <td style="color:blue;font-weight:bold">{{row.item}}</td>
-            <td>{{row.total}}</td><td>{{row.status}}</td>
-        </tr>
+        <tr><td>{{row.po}}</td><td>{{row.customer}}</td><td>{{row.item}}</td><td>{{row.total}}</td><td>{{row.status}}</td></tr>
         {% endfor %}
     </table>
-    """, data=display_data, email_status=email_status)
+    """, data=data)
 
 @app.route("/upload", methods=["POST"])
 def upload():
     f = request.files.get("file")
-    if f: 
-        res = process_document(f.read())
-        return f"<script>alert('{res}');window.location.href='/'</script>"
+    if f: return f"<script>alert('{process_document(f.read())}');window.location.href='/'</script>"
     return "<script>window.location.href='/'</script>"
 
-@app.route("/download")
-def download():
-    orders = Order.query.all()
-    data = []
-    for o in orders:
-        sym = o.currency_symbol if o.currency_symbol else ""
-        formatted_total = f"{sym} {o.total_amount}"
-        data.append({"PO Number": o.po_number, "Customer Name": o.customer_name, "Main Item": get_high_value_item_name(o.items), "Total Value": formatted_total, "Status": o.status})
-    df = pd.DataFrame(data)
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
-    out.seek(0)
-    return send_file(out, as_attachment=True, download_name="Tracker.xlsx")
+# --- 🛠️ TEST EMAIL ROUTE (FIXED) ---
+@app.route("/test-email")
+def test_email():
+    try:
+        if not EMAIL_USER or not EMAIL_PASS: return "❌ Error: Email/Pass Missing in Environment."
+        
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(EMAIL_USER, EMAIL_PASS)
+        mail.select("inbox")
+        
+        # 🔥 FIX: Added Parentheses around (UNREAD) for Gmail compatibility
+        status, messages = mail.search(None, '(UNREAD)')
+        
+        count = len(messages[0].split()) if messages[0] else 0
+        mail.logout()
+        return f"✅ <b>SUCCESS!</b><br>Connected as: {EMAIL_USER}<br>Unread Emails: {count}<br><br>If count is > 0, check Home Page for new orders!"
+    except Exception as e:
+        return f"❌ <b>FAILED!</b><br>Error: {str(e)}"
 
-# --- EMAIL WATCHER ---
+# --- EMAIL WATCHER (FIXED) ---
 def email_bot():
     while True:
         try:
@@ -212,7 +171,10 @@ def email_bot():
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
             mail.login(EMAIL_USER, EMAIL_PASS)
             mail.select("inbox")
-            status, messages = mail.search(None, 'UNREAD')
+            
+            # 🔥 FIX: Added Parentheses here too
+            status, messages = mail.search(None, '(UNREAD)')
+            
             for e_id in messages[0].split():
                 res, msg = mail.fetch(e_id, "(RFC822)")
                 for response in msg:
