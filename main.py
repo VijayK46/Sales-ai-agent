@@ -36,7 +36,7 @@ db = SQLAlchemy(model_class=Base)
 db.init_app(app)
 
 class Order(db.Model):
-    __tablename__ = 'orders_v10_shortname' # New Version for Short Name
+    __tablename__ = 'orders_v11_test'
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(50), nullable=False)
     customer_name = db.Column(db.String(100), nullable=False)
@@ -48,7 +48,7 @@ class Order(db.Model):
 with app.app_context():
     db.create_all()
 
-# --- HELPER: CLEAN PRICE ---
+# --- HELPER FUNCTIONS ---
 def clean_float(value):
     try:
         if not value: return 0.0
@@ -56,72 +56,39 @@ def clean_float(value):
         return float(clean_str) if clean_str else 0.0
     except: return 0.0
 
-# --- HELPER: HIGH VALUE ITEM (With Cleanup) ---
 def get_high_value_item_name(items_json):
     try:
         if not items_json: return "-"
         items = json.loads(items_json)
         if not items: return "-"
-        
         best_item = "-"
         max_val = -1.0
-        
         for item in items:
-            # Step 1: Get the Name
             raw_name = item.get('name', 'Unknown')
-            
-            # Step 2: Remove Model Numbers / Part Numbers (Optional Cleanup)
-            # Logic: If name is very long, take first 3-4 words.
             short_name = " ".join(raw_name.split()[:4]) if len(raw_name.split()) > 4 else raw_name
-            
-            # Calculate Value
             price = clean_float(item.get('price', 0))
             qty = clean_float(item.get('qty', 1))
             total = price * qty
-            
             if total > max_val:
                 max_val = total
-                best_item = short_name # Store the Short Name
-                
+                best_item = short_name
         return best_item
     except: return "-"
 
-# --- AI LOGIC (GEMINI FLASH) ---
+# --- AI LOGIC ---
 def process_document(file_data):
     try:
         model = genai.GenerativeModel("gemini-flash-latest")
-        
-        # 🔥 MODIFIED PROMPT FOR SHORT NAMES 🔥
         prompt = """
         Analyze PDF. Determine Type: "CUSTOMER_PO", "OA", "SHIPPING".
-        
-        1. CUSTOMER_PO: 
-           - Extract 'customer_name'.
-           - Extract 'po_number'.
-           - Extract 'total_amount'.
-           - Extract 'currency_symbol'.
-           - Extract items:
-             * 'name': EXTRACT ONLY THE PRODUCT CATEGORY NAME. 
-               DO NOT include Part Numbers, Model Numbers, Descriptions, or Colors.
-               Example: Instead of "RS-2000 Optical Table 4x8 ft", just return "Optical Table".
-               Example: Instead of "Laser Diode 5mW 650nm Red", just return "Laser Diode".
-             * 'qty': Quantity number only.
-             * 'price': Unit price.
-        
+        1. CUSTOMER_PO: Extract 'customer_name', 'po_number', 'total_amount', 'currency_symbol', items(name, qty, price).
+           - 'name': PRODUCT CATEGORY ONLY. No Part No/Desc.
         2. OA: Extract 'Reference PO Number'.
         3. SHIPPING: Extract 'Reference PO Number'.
         
         Return JSON:
-        {
-            "type": "CUSTOMER_PO",
-            "po_number": "...",
-            "customer_name": "...",
-            "currency_symbol": "...",
-            "total_amount": "...",
-            "items": [{"name": "Optical Table", "qty": 1, "price": "5000"}]
-        }
+        {"type": "CUSTOMER_PO", "po_number": "...", "customer_name": "...", "currency_symbol": "...", "total_amount": "...", "items": [{"name": "...", "qty": 1, "price": "..."}]}
         """
-        
         response = model.generate_content([{"mime_type": "application/pdf", "data": file_data}, prompt])
         text = response.text.replace("```json", "").replace("```", "").strip()
         data = json.loads(text)
@@ -135,7 +102,6 @@ def process_document(file_data):
             if doc_type == "CUSTOMER_PO":
                 existing = Order.query.filter_by(po_number=po_num).first()
                 if existing: return f"Duplicate: PO {po_num} Exists"
-                
                 new_order = Order(
                     po_number=po_num,
                     customer_name=data.get("customer_name", "Unknown"),
@@ -147,7 +113,6 @@ def process_document(file_data):
                 db.session.add(new_order)
                 db.session.commit()
                 return "✅ Success: PO Created"
-
             elif doc_type in ["OA", "SHIPPING"]:
                 order = Order.query.filter(Order.po_number.ilike(f"%{po_num}%")).first()
                 if order:
@@ -155,19 +120,33 @@ def process_document(file_data):
                     if doc_type == "SHIPPING": order.status = "Shipped"
                     db.session.commit()
                     return f"✅ Status Updated: {order.status}"
-                else:
-                    return f"❌ PO {po_num} Not Found"
-                    
+                else: return f"❌ PO {po_num} Not Found"
         return "Processed"
-
     except Exception as e:
-        print(f"Error: {e}")
         with app.app_context(): db.session.rollback()
         return f"Error: {str(e)}"
+
+# --- EMAIL TESTER (NEW FEATURE) ---
+def check_email_connection():
+    try:
+        if not EMAIL_USER or not EMAIL_PASS:
+            return "❌ ENV VARIABLES MISSING"
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(EMAIL_USER, EMAIL_PASS)
+        mail.select("inbox")
+        status, messages = mail.search(None, 'UNREAD')
+        count = len(messages[0].split()) if messages[0] else 0
+        mail.logout()
+        return f"✅ Connected! (Unread Emails: {count})"
+    except Exception as e:
+        return f"❌ FAILED: {str(e)}"
 
 # --- ROUTES ---
 @app.route("/")
 def home_view():
+    # TEST EMAIL CONNECTION ON LOAD
+    email_status = check_email_connection()
+    
     orders = Order.query.order_by(Order.id.desc()).all()
     display_data = []
     for o in orders:
@@ -179,8 +158,14 @@ def home_view():
             "total": formatted_total, "status": o.status
         })
     return render_template_string("""
-    <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} th{background:#eee}</style>
+    <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} th{background:#eee} .status-box{padding:10px; border-radius:5px; margin-bottom:20px; font-weight:bold; color:white; background: #333;} </style>
+    
     <h1>🚀 Sales AI Manager</h1>
+    
+    <div class="status-box" style="background: {% if '✅' in email_status %}green{% else %}red{% endif %};">
+        📧 Email Status: {{ email_status }}
+    </div>
+
     <form action="/upload" method="post" enctype="multipart/form-data">
         <input type="file" name="file" accept=".pdf" required> <button>Analyze</button>
     </form>
@@ -195,7 +180,7 @@ def home_view():
         </tr>
         {% endfor %}
     </table>
-    """, data=display_data)
+    """, data=display_data, email_status=email_status)
 
 @app.route("/upload", methods=["POST"])
 def upload():
@@ -245,31 +230,6 @@ if os.environ.get("EMAIL_USER"):
     t = threading.Thread(target=email_bot)
     t.daemon = True
     t.start()
-# --- INDHA CODE-A COPY PANNI MAIN.PY KIEZHA PODUNGA ---
-
-@app.route("/test-email")
-def test_email():
-    try:
-        if not EMAIL_USER or not EMAIL_PASS:
-            return "❌ Error: Email or Password not set in Environment Variables."
-        
-        # Try Connecting
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(EMAIL_USER, EMAIL_PASS)
-        mail.select("inbox")
-        
-        # Check Unread Count
-        status, messages = mail.search(None, 'UNREAD')
-        count = len(messages[0].split()) if messages[0] else 0
-        
-        mail.logout()
-        return f"✅ <b>SUCCESS!</b><br>Email Connected Successfully!<br>Connected as: {EMAIL_USER}<br>Unread Emails Found: {count}"
-        
-    except Exception as e:
-        return f"❌ <b>FAILED!</b><br>Error Message: {str(e)}"
-
-# -----------------------------------------------------
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
-
