@@ -195,6 +195,10 @@ if os.environ.get("EMAIL_USER"):
     t = threading.Thread(target=email_bot)
     t.daemon = True
     t.start()
+# --- KADASI 2 LINES-A IDHAI VECHU REPLACE PANNUNGA ---
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=10000)
+    # Render tharra Port-a eduthukko, illana 10000 use pannu
+    port = int(os.environ.get("PORT", 10000)) 
+    app.run(host='0.0.0.0', port=port)
+
