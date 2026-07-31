@@ -3,15 +3,18 @@ import json
 import re
 import pandas as pd
 import google.generativeai as genai
-from flask import Flask, request, send_file, render_template_string
+from flask import Flask, request, send_file, render_template_string, redirect, url_for, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase
 from io import BytesIO
+from datetime import datetime
 import threading
 import imaplib
 import email
 from email.header import decode_header
 import time
+
+import youtube_agent
 
 app = Flask(__name__)
 
@@ -50,6 +53,21 @@ class Order(db.Model):
     total_amount = db.Column(db.Float, nullable=False)
     items = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(50), default="PO Received")
+
+class Transcript(db.Model):
+    __tablename__ = 'youtube_transcripts_v1'
+    id = db.Column(db.Integer, primary_key=True)
+    video_id = db.Column(db.String(20), nullable=False)
+    url = db.Column(db.String(300), nullable=False)
+    title = db.Column(db.String(300), nullable=True)
+    channel = db.Column(db.String(200), nullable=True)
+    duration_sec = db.Column(db.Integer, default=0)
+    source = db.Column(db.String(20), nullable=True)      # captions | audio
+    status = db.Column(db.String(60), default="Queued")   # Queued | <stage> | Done | Error
+    error = db.Column(db.Text, nullable=True)
+    transcript = db.Column(db.Text, nullable=True)
+    summary = db.Column(db.Text, nullable=True)           # JSON blob
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 with app.app_context():
     db.create_all()
@@ -123,6 +141,203 @@ def process_document(file_data):
         with app.app_context(): db.session.rollback()
         return f"Error: {str(e)}"
 
+# --- YOUTUBE TRANSCRIPT AGENT ---
+def run_transcript_job(job_id, prefer_captions=True):
+    """Background worker: runs the agent and keeps the job row up to date."""
+    with app.app_context():
+        job = db.session.get(Transcript, job_id)
+        if not job:
+            return
+
+        def progress(stage):
+            with app.app_context():
+                row = db.session.get(Transcript, job_id)
+                if row:
+                    row.status = stage
+                    db.session.commit()
+
+        try:
+            result = youtube_agent.transcribe_youtube(
+                job.url, prefer_captions=prefer_captions, progress=progress
+            )
+            job = db.session.get(Transcript, job_id)
+            job.title = result.get("title")
+            job.channel = result.get("channel")
+            job.duration_sec = result.get("duration_sec", 0)
+            job.source = result.get("source")
+            job.transcript = result.get("transcript")
+            job.status = "Summarising"
+            db.session.commit()
+
+            summary = youtube_agent.summarize_transcript(job.transcript, job.title)
+            job = db.session.get(Transcript, job_id)
+            job.summary = json.dumps(summary) if summary else None
+            job.status = "Done"
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            job = db.session.get(Transcript, job_id)
+            if job:
+                job.status = "Error"
+                job.error = str(e)
+                db.session.commit()
+
+def start_transcript_job(url, prefer_captions=True):
+    """Create the job row, kick off the worker, return the new job id."""
+    video_id = youtube_agent.extract_video_id(url)  # raises AgentError on junk input
+    job = Transcript(video_id=video_id, url=youtube_agent.watch_url(video_id), status="Queued")
+    db.session.add(job)
+    db.session.commit()
+    threading.Thread(target=run_transcript_job, args=(job.id, prefer_captions), daemon=True).start()
+    return job.id
+
+def load_summary(job):
+    try:
+        return json.loads(job.summary) if job.summary else None
+    except Exception:
+        return None
+
+YT_STYLE = """
+<style>
+body{font-family:sans-serif;padding:20px;max-width:900px;margin:auto;color:#222}
+table{width:100%;border-collapse:collapse;margin-top:20px}
+th,td{border:1px solid #ddd;padding:10px;text-align:left}
+.btn{padding:10px 14px;background:#1a73e8;color:#fff;text-decoration:none;border:0;border-radius:4px;cursor:pointer}
+input[type=text]{padding:10px;width:60%}
+pre{white-space:pre-wrap;background:#f7f7f7;padding:15px;border-radius:6px;line-height:1.5}
+.badge{padding:3px 8px;border-radius:10px;font-size:12px;background:#eee}
+.done{background:#d7f0d7}.err{background:#f8d7d7}.run{background:#fdf1c8}
+</style>
+"""
+
+def status_class(status):
+    if status == "Done": return "done"
+    if status == "Error": return "err"
+    return "run"
+
+@app.route("/youtube")
+def youtube_home():
+    jobs = Transcript.query.order_by(Transcript.id.desc()).limit(50).all()
+    return render_template_string(YT_STYLE + """
+    <h1>🎧 YouTube Transcript Agent</h1>
+    <a href="/">&larr; Back to Sales AI Manager</a>
+    <form action="/youtube/transcribe" method="post" style="margin-top:20px">
+        <input type="text" name="url" placeholder="https://www.youtube.com/watch?v=..." required>
+        <button class="btn">Transcribe</button><br><br>
+        <label><input type="checkbox" name="force_audio" value="1">
+        Ignore captions and transcribe the audio with AI</label>
+    </form>
+    {% if error %}<p style="color:#c00">❌ {{ error }}</p>{% endif %}
+    <table>
+        <tr><th>Video</th><th>Source</th><th>Length</th><th>Status</th><th></th></tr>
+        {% for j in jobs %}
+        <tr>
+            <td>{{ j.title or j.video_id }}<br><small>{{ j.channel or '' }}</small></td>
+            <td>{{ j.source or '-' }}</td>
+            <td>{{ fmt(j.duration_sec or 0) }}</td>
+            <td><span class="badge {{ cls(j.status) }}">{{ j.status }}</span></td>
+            <td><a href="/youtube/{{ j.id }}">Open</a></td>
+        </tr>
+        {% endfor %}
+    </table>
+    """, jobs=jobs, error=request.args.get("error"),
+         fmt=youtube_agent.format_timestamp, cls=status_class)
+
+@app.route("/youtube/transcribe", methods=["POST"])
+def youtube_transcribe():
+    try:
+        job_id = start_transcript_job(
+            request.form.get("url", ""),
+            prefer_captions=not request.form.get("force_audio"),
+        )
+        return redirect(url_for("youtube_detail", job_id=job_id))
+    except youtube_agent.AgentError as e:
+        return redirect(url_for("youtube_home", error=str(e)))
+
+@app.route("/youtube/<int:job_id>")
+def youtube_detail(job_id):
+    job = db.session.get(Transcript, job_id)
+    if not job:
+        return redirect(url_for("youtube_home", error="Transcript not found"))
+    running = job.status not in ("Done", "Error")
+    return render_template_string(YT_STYLE + """
+    {% if running %}<meta http-equiv="refresh" content="5">{% endif %}
+    <a href="/youtube">&larr; All transcripts</a>
+    <h1>{{ job.title or job.video_id }}</h1>
+    <p>
+        <span class="badge {{ cls(job.status) }}">{{ job.status }}</span>
+        {{ job.channel or '' }} · {{ fmt(job.duration_sec or 0) }}
+        · <a href="{{ job.url }}" target="_blank">Watch on YouTube</a>
+        {% if job.source %} · source: {{ job.source }}{% endif %}
+    </p>
+    {% if running %}<p>⏳ Working on it - this page refreshes every 5 seconds.</p>{% endif %}
+    {% if job.error %}<p style="color:#c00">❌ {{ job.error }}</p>{% endif %}
+    {% if summary %}
+        <h2>Summary</h2>
+        <p>{{ summary.get('summary','') }}</p>
+        {% for label, key in [('Key points','key_points'), ('Action items','action_items'), ('Topics','topics')] %}
+            {% if summary.get(key) %}
+            <h3>{{ label }}</h3>
+            <ul>{% for row in summary.get(key) %}<li>{{ row }}</li>{% endfor %}</ul>
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+    {% if job.transcript %}
+        <h2>Transcript <a class="btn" href="/youtube/{{ job.id }}/download">⬇ Download .txt</a></h2>
+        <pre>{{ job.transcript }}</pre>
+    {% endif %}
+    <form action="/youtube/{{ job.id }}/delete" method="post" style="margin-top:20px">
+        <button class="btn" style="background:#b00">Delete</button>
+    </form>
+    """, job=job, summary=load_summary(job), running=running,
+         fmt=youtube_agent.format_timestamp, cls=status_class)
+
+@app.route("/youtube/<int:job_id>/download")
+def youtube_download(job_id):
+    job = db.session.get(Transcript, job_id)
+    if not job or not job.transcript:
+        return redirect(url_for("youtube_home", error="Nothing to download yet"))
+    header = f"{job.title or job.video_id}\n{job.url}\n\n"
+    safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', job.title or job.video_id)[:60]
+    return send_file(
+        BytesIO((header + job.transcript).encode("utf-8")),
+        mimetype="text/plain",
+        as_attachment=True,
+        download_name=f"{safe_name}.txt",
+    )
+
+@app.route("/youtube/<int:job_id>/delete", methods=["POST"])
+def youtube_delete(job_id):
+    job = db.session.get(Transcript, job_id)
+    if job:
+        db.session.delete(job)
+        db.session.commit()
+    return redirect(url_for("youtube_home"))
+
+@app.route("/api/youtube/<int:job_id>")
+def youtube_api(job_id):
+    job = db.session.get(Transcript, job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({
+        "id": job.id, "video_id": job.video_id, "url": job.url, "title": job.title,
+        "channel": job.channel, "duration_sec": job.duration_sec, "source": job.source,
+        "status": job.status, "error": job.error, "transcript": job.transcript,
+        "summary": load_summary(job),
+    })
+
+@app.route("/api/youtube", methods=["POST"])
+def youtube_api_create():
+    payload = request.get_json(silent=True) or request.form
+    try:
+        job_id = start_transcript_job(
+            payload.get("url", ""),
+            prefer_captions=not payload.get("force_audio"),
+        )
+        return jsonify({"id": job_id, "status_url": f"/api/youtube/{job_id}"}), 202
+    except youtube_agent.AgentError as e:
+        return jsonify({"error": str(e)}), 400
+
 # --- ROUTES ---
 @app.route("/")
 def home_view():
@@ -133,6 +348,7 @@ def home_view():
         <style>body{font-family:sans-serif;padding:20px} table{width:100%;border-collapse:collapse;margin-top:20px} th,td{border:1px solid #ddd;padding:10px} .btn{padding:10px;background:blue;color:white;text-decoration:none}</style>
         <h1>🚀 Sales AI Manager</h1>
         <a href="/test-email" class="btn" style="background:orange">🛠️ Test Email Connection</a>
+        <a href="/youtube" class="btn" style="background:red">🎧 YouTube Transcript Agent</a>
         <br><br>
         <form action="/upload" method="post" enctype="multipart/form-data">
             <input type="file" name="file" accept=".pdf" required> <button>Analyze</button>
