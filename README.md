@@ -2,6 +2,22 @@
 
 Flask app that turns sales paperwork and recordings into structured data with Gemini.
 
+## Running the tests
+
+```
+pip install -r requirements.txt -r requirements-dev.txt
+pytest tests -q
+```
+
+Nothing in the suite touches the network or the Gemini API - yt-dlp, the caption API
+and the model are stubbed - so it runs anywhere in about a second. CI runs the same
+suite on the Python version read from the Dockerfile, and builds the image.
+
+`tests/test_packaging.py` is the odd one out: it checks every dependency's
+`Requires-Python` against the Dockerfile's base image. Without it, a base image older
+than a dependency needs makes pip quietly install a stale version instead of failing
+the build.
+
 * **PO pipeline** (`/`) - upload a PDF or let the inbox watcher pick one up; POs, order
   acknowledgements and shipping docs are extracted and tracked.
 * **YouTube transcript agent** (`/youtube`) - paste a YouTube link and get a full

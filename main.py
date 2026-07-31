@@ -8,6 +8,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase
 from io import BytesIO
 from datetime import datetime
+import fcntl
 import threading
 import imaplib
 import email
@@ -34,6 +35,7 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
 
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
+EMAIL_WATCHER_LOCK = os.environ.get("EMAIL_WATCHER_LOCK", "/tmp/sales_ai_email_watcher.lock")
 api_key = os.environ.get("GENAI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
@@ -137,6 +139,9 @@ def process_document(file_data):
                     db.session.commit()
                     return f"✅ Updated: {order.status}"
                 return "❌ PO Not Found"
+            # Anything else (a random PDF, a quote, an invoice) - say so instead
+            # of falling off the end and reporting "None" to the user.
+            return f"Skipped: Not a PO/OA/Shipping document (type: {doc_type})"
     except Exception as e:
         with app.app_context(): db.session.rollback()
         return f"Error: {str(e)}"
@@ -363,10 +368,19 @@ def home_view():
     except Exception as e:
         return f"<h2>Database Error: {e}</h2><p>Please refresh the page.</p>"
 
+def js_alert(message):
+    """Build the alert+redirect page. json.dumps quotes the message safely, so
+    an error containing ' or a newline no longer breaks the whole script."""
+    literal = (json.dumps(str(message), ensure_ascii=False)
+               .replace("<", "\\u003c")        # cannot close the <script> tag
+               .replace(" ", "\\u2028")   # valid JSON, but breaks JS strings
+               .replace(" ", "\\u2029"))
+    return f"<script>alert({literal});window.location.href='/'</script>"
+
 @app.route("/upload", methods=["POST"])
 def upload():
     f = request.files.get("file")
-    if f: return f"<script>alert('{process_document(f.read())}');window.location.href='/'</script>"
+    if f: return js_alert(process_document(f.read()))
     return "<script>window.location.href='/'</script>"
 
 @app.route("/test-email")
@@ -404,13 +418,32 @@ def email_bot():
                                     process_document(part.get_payload(decode=True))
                             mail.store(e_id, '+FLAGS', '\\Seen')
             mail.logout()
-        except: pass
+        except Exception as e:
+            # Keep polling, but say what went wrong - a silent 'except: pass'
+            # here made a wrong password look exactly like an empty inbox.
+            print(f"[email_bot] poll failed: {e}", flush=True)
         time.sleep(30)
 
+def acquire_watcher_lock(path=EMAIL_WATCHER_LOCK):
+    """Return an open file handle if this process won the inbox, else None.
+
+    gunicorn runs 4 workers and each one imports this module, so without a lock
+    all 4 poll the same mailbox every 30s and race to process the same PDFs.
+    The handle is deliberately never closed - it holds the lock for the life of
+    the process."""
+    try:
+        handle = open(path, "w")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except OSError:
+        return None
+
 if os.environ.get("EMAIL_USER"):
-    t = threading.Thread(target=email_bot)
-    t.daemon = True
-    t.start()
+    _watcher_lock = acquire_watcher_lock()
+    if _watcher_lock:
+        t = threading.Thread(target=email_bot)
+        t.daemon = True
+        t.start()
 # --- KADASI 2 LINES-A IDHAI VECHU REPLACE PANNUNGA ---
 
 if __name__ == "__main__":
