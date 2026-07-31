@@ -1,4 +1,6 @@
-FROM python:3.9-slim
+# 3.11: yt-dlp requires Python >= 3.10. On 3.9 pip silently installs a stale
+# yt-dlp instead of failing, which then breaks against YouTube's current site.
+FROM python:3.11-slim
 
 WORKDIR /app
 

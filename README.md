@@ -50,4 +50,7 @@ and the detail page refreshes itself until the job finishes.
 | `YTDLP_COOKIES_FILE` | - | Cookie file for videos YouTube gates on sign-in |
 
 ffmpeg is required for the audio path and is installed by the Dockerfile. Without it the
-agent still works from captions, and falls back to sending the raw audio in one piece.
+captions path still works and the audio path fails with a clear message.
+
+The image must be Python 3.10 or newer - yt-dlp requires it, and on older Python pip
+quietly installs a stale yt-dlp that then breaks against YouTube's current site.

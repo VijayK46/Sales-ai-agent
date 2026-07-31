@@ -113,8 +113,12 @@ def _shift_timestamps(text, offset_sec):
 
 
 # --- CAPTION PATH ---
-def fetch_caption_transcript(video_id):
-    """Return caption text, or None when the video has no usable captions."""
+def fetch_caption_segments(video_id):
+    """Return raw caption cues, or None when the video has no usable captions.
+
+    This path never touches yt-dlp, so it keeps working when YouTube blocks the
+    downloader (bot checks on cloud IPs, sign-in walls...).
+    """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
@@ -122,13 +126,23 @@ def fetch_caption_transcript(video_id):
 
     try:
         if hasattr(YouTubeTranscriptApi, "get_transcript"):  # api < 1.0
-            segments = YouTubeTranscriptApi.get_transcript(video_id, languages=CAPTION_LANGS)
-        else:  # api >= 1.0
-            segments = YouTubeTranscriptApi().fetch(video_id, languages=CAPTION_LANGS).to_raw_data()
+            return YouTubeTranscriptApi.get_transcript(video_id, languages=CAPTION_LANGS)
+        # api >= 1.0
+        return YouTubeTranscriptApi().fetch(video_id, languages=CAPTION_LANGS).to_raw_data()
     except Exception:
         return None
 
-    return _captions_to_text(segments)
+
+def fetch_caption_transcript(video_id):
+    """Return caption text, or None when the video has no usable captions."""
+    return _captions_to_text(fetch_caption_segments(video_id))
+
+
+def _duration_from_segments(segments):
+    if not segments:
+        return 0
+    last = segments[-1]
+    return int(float(last.get("start", 0)) + float(last.get("duration", 0)))
 
 
 def _captions_to_text(segments, group_sec=30):
@@ -176,14 +190,32 @@ def fetch_metadata(video_id):
     }
 
 
+def fetch_metadata_optional(video_id):
+    """Metadata for the captions path: nice to have, never worth failing over."""
+    try:
+        return fetch_metadata(video_id)
+    except AgentError:
+        return None
+
+
 def download_audio(video_id, work_dir):
     """Download the audio track and return the path to a small mono mp3."""
     import yt_dlp
+
+    # Without ffmpeg yt-dlp leaves the raw stream (usually .webm), which Gemini
+    # rejects with an unhelpful error - fail here with the actual cause instead.
+    if not shutil.which("ffmpeg"):
+        raise AgentError(
+            "ffmpeg is not installed - it is required to convert YouTube audio into a "
+            "format Gemini accepts (apt-get install -y ffmpeg). Videos that have "
+            "captions still work without it."
+        )
 
     opts = {
         "quiet": True,
         "no_warnings": True,
         "format": "bestaudio/best",
+        "noplaylist": True,
         "outtmpl": os.path.join(work_dir, "audio.%(ext)s"),
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
@@ -206,7 +238,7 @@ def download_audio(video_id, work_dir):
     if os.path.exists(mp3_path):
         return mp3_path
 
-    # ffmpeg missing or conversion skipped - fall back to whatever was saved.
+    # The postprocessor may have chosen a different extension.
     leftovers = [os.path.join(work_dir, f) for f in os.listdir(work_dir)]
     if not leftovers:
         raise AgentError("Audio download produced no file.")
@@ -297,24 +329,30 @@ def transcribe_youtube(url, prefer_captions=True, progress=None):
             progress(message)
 
     video_id = extract_video_id(url)
+    result = {"video_id": video_id, "url": watch_url(video_id),
+              "title": video_id, "channel": "", "duration_sec": 0}
+
+    # Captions first: no download, no model call, and no yt-dlp - so this still
+    # works on videos where YouTube would block the downloader.
+    if prefer_captions:
+        report("Checking for captions")
+        segments = fetch_caption_segments(video_id)
+        if segments:
+            report("Captions found")
+            meta = fetch_metadata_optional(video_id)
+            result.update(meta or {"duration_sec": _duration_from_segments(segments)})
+            result.update(source="captions", transcript=_captions_to_text(segments))
+            return result
+
     report("Reading video info")
     meta = fetch_metadata(video_id)
+    result.update(meta)
 
     if MAX_DURATION_SEC and meta["duration_sec"] > MAX_DURATION_SEC:
         raise AgentError(
             f"Video is {format_timestamp(meta['duration_sec'])} long - the limit is "
             f"{format_timestamp(MAX_DURATION_SEC)}."
         )
-
-    result = {"video_id": video_id, "url": watch_url(video_id), **meta}
-
-    if prefer_captions:
-        report("Checking for captions")
-        captions = fetch_caption_transcript(video_id)
-        if captions:
-            report("Captions found")
-            result.update(source="captions", transcript=captions)
-            return result
 
     work_dir = tempfile.mkdtemp(prefix="yt_agent_")
     try:
